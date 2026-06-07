@@ -42,9 +42,15 @@ API_URL = os.environ.get("AWS_CALC_API_URL", "").rstrip("/")
 
 # ── payload helpers ────────────────────────────────────────────────────────────
 
+def _safe_text(text):
+    # AWS rejects &, <, > in names, group names and descriptions.
+    if not text:
+        return text
+    return text.replace("&", "and").replace("<", "(").replace(">", ")")
+
+
 def _safe_group_name(name: str) -> str:
-    # AWS rejects group names containing &, <, >.
-    return (name or "Group").replace("&", "and").replace("<", "(").replace(">", ")")
+    return _safe_text(name) or "Group"
 
 
 def _normalise_service(svc: dict) -> dict:
@@ -81,7 +87,7 @@ def build_payload(groups_in: list | None, services_in: list | None):
             errors.append("A service entry is missing the 'service' field.")
             return
         region = entry.get("region", "us-east-1")
-        desc   = entry.get("description")
+        desc   = _safe_text(entry.get("description"))
         config = dict(entry.get("config") or {})
         try:
             payload = build(svc_name, region, desc, config)
@@ -114,7 +120,7 @@ async def save_estimate(name: str, top_services: dict, groups: dict) -> str:
 
     created = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
     body = {
-        "name": name,
+        "name": _safe_text(name) or "My Estimate",
         "services": norm_top,
         "groups": norm_groups,
         "groupSubtotal": {"monthly": 0, "upfront": 0},
