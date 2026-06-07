@@ -173,6 +173,16 @@ def _storage_gb(clause: str):
     return int(val * 1024) if unit == "tb" else (round(val / 1024, 2) if unit == "mb" else int(val))
 
 
+def _transfer_gb(clause: str):
+    """A GB/TB figure tied to data transfer / outbound / egress wording."""
+    m = (re.search(r"(?:data\s*transfer|transfer|outbound|egress)[^.,;]*?(\d[\d.]*)\s*(gb|tb)", clause)
+         or re.search(r"(\d[\d.]*)\s*(gb|tb)[^.,;]*?(?:data\s*transfer|transfer|outbound|egress)", clause))
+    if not m:
+        return None
+    val = float(m.group(1))
+    return int(val * 1024) if m.group(2) == "tb" else int(val)
+
+
 def _requests_per_month(clause: str):
     """Find a request/message/invocation count and normalize to per-month."""
     m = re.search(r"(\d[\d.,]*)\s*(k|m|million|thousand|bn|billion)?\s*"
@@ -193,6 +203,30 @@ _INSTANCE_RE = re.compile(r"\b((?:db\.|cache\.)?[a-z]+\d+[a-z]*\.(?:nano|micro|s
 def _instance_type(clause: str):
     m = _INSTANCE_RE.search(clause)
     return m.group(1) if m else None
+
+
+def _normalize_clause(c: str) -> str:
+    """Collapse phrasings so 'RDS Aurora MySQL' = Aurora, drop 'amazon/aws' noise."""
+    c = re.sub(r"\brds\s+aurora\b", "aurora", c)   # 'RDS Aurora' -> Aurora
+    c = re.sub(r"\b(amazon|aws)\s+", "", c)
+    return re.sub(r"\s+", " ", c).strip()
+
+
+def _service_matches(clause: str):
+    """All distinct, non-overlapping service mentions in a clause, left to right."""
+    spans = []
+    for pat, name in _KEYWORDS:
+        for m in re.finditer(pat, clause):
+            spans.append([m.start(), m.end(), name])
+    # longest match wins at any position (specific over generic)
+    spans.sort(key=lambda s: (s[0], -(s[1] - s[0])))
+    kept = []
+    for s in spans:
+        if any(not (s[1] <= k[0] or s[0] >= k[1]) for k in kept):
+            continue
+        kept.append(s)
+    kept.sort(key=lambda s: s[0])
+    return kept
 
 
 def _detect_service(clause: str, itype: str | None):
@@ -245,12 +279,13 @@ def _config_for(name: str, clause: str, itype: str | None, qty: int) -> dict:
         cfg["instances"] = qty
         if itype:
             cfg["instance_type"] = itype
-        if gb:
-            cfg["storage_gb"] = gb
-        if "transfer" in clause or "outbound" in clause:
-            tg = _storage_gb(clause)
-            if tg:
-                cfg["data_outbound_gb"] = tg
+        # storage = a GB figure NOT tied to transfer wording
+        sg = _storage_gb(re.sub(r"(?:data\s*transfer|transfer|outbound|egress)[^.,;]*", "", clause))
+        if sg:
+            cfg["storage_gb"] = sg
+        tg = _transfer_gb(clause)
+        if tg:
+            cfg["data_outbound_gb"] = tg
         if re.search(r"\b(3\s*yr|3-year|three year)\b", clause):
             cfg.update(pricing="compute-savings", term="3yr")
         elif re.search(r"\b(1\s*yr|1-year|one year|reserved|savings)\b", clause):
@@ -302,7 +337,7 @@ def _config_for(name: str, clause: str, itype: str | None, qty: int) -> dict:
         cfg["node_type"] = itype or "cache.m5.large"
         cfg["engine"] = "redis" if name == "redis" else "redis"
     elif name == "cloudfront":
-        cfg["data_transfer_gb"] = gb or 100
+        cfg["data_transfer_gb"] = _transfer_gb(clause) or gb or 100
         cfg["https_requests"] = reqs or 1_000_000
     elif name == "api gateway":
         cfg["http_requests_million"] = round((reqs or 1_000_000) / 1e6, 4)
@@ -388,25 +423,35 @@ def parse_prompt(text: str) -> tuple[list[dict], list[str], list[str]]:
     # (introduces another service, e.g. "sqs with a lambda") but NOT "with 50 GB"
     # (an attribute), so sizes stay attached to their service.
     clauses = re.split(r",|\band\b|\bplus\b|;|\n|\bwith\s+an?\s|\bwith\s+the\s", low)
+
+    def _emit(name: str, segment: str):
+        itype = _instance_type(segment)
+        qty = _qty(segment)
+        cfg = _config_for(name, segment, itype, qty)
+        services.append({"service": name, "region": region,
+                         "description": segment.strip()[:80], "config": cfg})
+        notes.append(f"{name} ({', '.join(f'{k}={v}' for k, v in cfg.items()) or 'defaults'})")
+
     for raw in clauses:
-        clause = raw.strip()
+        clause = _normalize_clause(raw.strip())
         if len(clause) < 2:
             continue
-        itype = _instance_type(clause)
-        name = _detect_service(clause, itype)
-        if not name:
-            # only flag clauses that look like they meant a service (have letters
-            # and aren't pure filler/numbers)
-            stripped = clause.strip(" .")
-            if re.search(r"[a-z]", stripped) and not _FILLER.match(stripped):
-                unknown.append(raw.strip()[:60])
+        matches = _service_matches(clause)
+        if not matches:
+            # fall back: instance type implies EC2, or fuzzy-match a misspelling
+            itype = _instance_type(clause)
+            name = _detect_service(clause, itype)
+            if name:
+                _emit(name, clause)
+            else:
+                stripped = clause.strip(" .")
+                if re.search(r"[a-z]", stripped) and not _FILLER.match(stripped):
+                    unknown.append(raw.strip()[:60])
             continue
-        qty = _qty(clause)
-        cfg = _config_for(name, clause, itype, qty)
-        services.append({
-            "service": name, "region": region,
-            "description": raw.strip()[:80], "config": cfg,
-        })
-        notes.append(f"{name} ({', '.join(f'{k}={v}' for k, v in cfg.items()) or 'defaults'})")
+        # one or more services in this clause -> slice it per service so each gets
+        # its nearby attributes (e.g. "ALB NLB cloudfront 1TB" -> 3 services).
+        bounds = [0] + [m[0] for m in matches[1:]] + [len(clause)]
+        for i, (st, en, name) in enumerate(matches):
+            _emit(name, clause[bounds[i]:bounds[i + 1]])
 
     return services, notes, unknown
