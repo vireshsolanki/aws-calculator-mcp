@@ -37,6 +37,15 @@ def available() -> bool:
         return False
 
 
+def _install_chromium() -> None:
+    """Download the Chromium engine once (only called when launch finds it missing)."""
+    import subprocess
+    import sys
+    print("First run: downloading the Chromium engine for cost calculation "
+          "(one-time, ~150 MB)...", file=sys.stderr)
+    subprocess.run([sys.executable, "-m", "playwright", "install", "chromium"], check=True)
+
+
 async def bake_costs(draft_id: str, timeout_ms: int = 90_000) -> tuple[str, dict]:
     """
     Given a draft estimate id, drive AWS's own engine to compute costs and
@@ -51,14 +60,19 @@ async def bake_costs(draft_id: str, timeout_ms: int = 90_000) -> tuple[str, dict
 
     url = f"{ESTIMATE_BASE}{draft_id}"
     saved_ids: list[str] = []
+    # Container-friendly flags (sandbox / shared-memory restrictions).
+    launch_args = ["--no-sandbox", "--disable-dev-shm-usage", "--disable-gpu"]
 
     async with async_playwright() as p:
-        # Flags make Chromium robust inside containers (Render/Fly/Docker), where
-        # the sandbox and /dev/shm are restricted.
-        browser = await p.chromium.launch(
-            headless=True,
-            args=["--no-sandbox", "--disable-dev-shm-usage", "--disable-gpu"],
-        )
+        try:
+            browser = await p.chromium.launch(headless=True, args=launch_args)
+        except Exception as e:
+            # Browser binary missing -> download it once, then retry.
+            if "Executable doesn't exist" in str(e) or "playwright install" in str(e):
+                _install_chromium()
+                browser = await p.chromium.launch(headless=True, args=launch_args)
+            else:
+                raise
         ctx = await browser.new_context(viewport={"width": 1600, "height": 1200})
         page = await ctx.new_page()
 

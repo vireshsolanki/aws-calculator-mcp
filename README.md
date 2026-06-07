@@ -3,411 +3,246 @@
 [![PyPI](https://img.shields.io/pypi/v/aws-calculator-mcp.svg)](https://pypi.org/project/aws-calculator-mcp/)
 [![Python](https://img.shields.io/pypi/pyversions/aws-calculator-mcp.svg)](https://pypi.org/project/aws-calculator-mcp/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-[![Buy Me a Coffee](https://img.shields.io/badge/Buy%20Me%20a%20Coffee-support-FFDD00?logo=buymeacoffee&logoColor=black)](https://www.buymeacoffee.com/vireshsolanki)
 
-Turn a plain list of AWS services into an **official, shareable AWS Pricing
-Calculator estimate** — a real `https://calculator.aws/#/estimate?id=...` link with
-**real costs already computed and baked in**. No AWS account, no credentials, no
-manual clicking.
+Describe your AWS setup in **plain English** and get back an **official, shareable
+AWS Pricing Calculator link** — a real `https://calculator.aws/#/estimate?id=...`
+with **real costs already computed and baked in**. No AWS account, no credentials,
+no manual clicking, no JSON to write.
 
 ```
-You:  "1× t4g.large with 64 GB EBS, an Aurora MySQL db.r6g.large, and a 20 GB S3 bucket"
-→     ✅ Monthly cost: $277.37 USD
-      🔗 https://calculator.aws/#/estimate?id=b11f0bf1d0a6c46511ec9854d1eee49fcd820e93
+$ aws-calc --prompt "2 t3.large EC2 with 50GB, RDS MySQL db.m5.large 100GB, 500GB S3, an ALB"
+
+✅ Monthly cost: $312.40 USD
+🔗 https://calculator.aws/#/estimate?id=8422dc22a2849dbf798ab405385a7e5f32fcb055
 ```
 
-Works as an **MCP server** (Claude, IDEs), a **REST API** (ChatGPT, automation,
-any language), and a **CLI** (scripts, cron, `.exe`). Same engine behind all three.
+Use it three ways — all from one install:
+- **CLI** (interactive or one-liner) — for anyone, scripts, CI, `.exe`
+- **MCP server** — inside Claude, Cursor, VS Code, any MCP client
+- **REST API** (optional) — for ChatGPT actions, automation, other languages
+
+> **Self-contained:** the module handles cost-baking itself — the browser engine it
+> needs is **auto-downloaded on first run**. You install one pip package; nothing else.
 
 ---
 
-## Table of contents
-
-1. [Which setup do I want?](#1-which-setup-do-i-want)
-2. [Quick start — hosted API (no Chromium for users)](#2-quick-start--hosted-api)
-3. [Use it with Claude (MCP)](#3-use-it-with-claude-mcp)
-4. [Use it with ChatGPT (Custom GPT action)](#4-use-it-with-chatgpt)
-5. [Use it from any tool / automation (REST)](#5-use-it-from-any-tool--automation-rest)
-6. [Use it from the command line / .exe](#6-use-it-from-the-command-line--exe)
-7. [Writing an estimate (services & config)](#7-writing-an-estimate)
-8. [Supported services](#8-supported-services)
-9. [Commitment pricing (1yr / 3yr)](#9-commitment-pricing-1yr--3yr)
-10. [How it works](#10-how-it-works)
-11. [Architecture & files](#11-architecture--files)
-12. [Limitations](#12-limitations)
-13. [Maintenance](#13-maintenance)
+## Contents
+1. [Install](#1-install)
+2. [Quick start — plain English](#2-quick-start--plain-english)
+3. [Interactive mode](#3-interactive-mode)
+4. [All CLI commands](#4-all-cli-commands)
+5. [Use it in Claude / Cursor / IDEs (MCP)](#5-use-it-in-claude--cursor--ides-mcp)
+6. [Use it from ChatGPT / automation (REST)](#6-use-it-from-chatgpt--automation-rest)
+7. [Supported services & config](#7-supported-services--config)
+8. [Commitment pricing (1yr / 3yr) & auto-scaling](#8-commitment-pricing--auto-scaling)
+9. [How it works](#9-how-it-works)
+10. [Limitations](#10-limitations)
 
 ---
 
-## 1. Which setup do I want?
-
-There is exactly **one heavy dependency** in the whole project: a headless browser
-(Chromium), used to make AWS compute the costs. **You install it in exactly one
-place — a server you host once — and then nobody else installs anything.**
-
-| You are… | Do this | Installs |
-|----------|---------|----------|
-| An **org/admin** setting this up for others | Host the API ([§2](#2-quick-start--hosted-api)) | Docker (Chromium is inside the image) |
-| An **end user** (Claude / ChatGPT / scripts) | Point at the hosted API | `mcp` + `httpx` only — **no browser** |
-| A **solo user** who wants it all on one machine | Local mode ([§3 option B](#3-use-it-with-claude-mcp)) | Python + Playwright + Chromium |
-
-> **Key promise:** with a hosted API, end users install **no Chromium and no
-> Playwright** — they only talk HTTP. The browser lives solely inside the host.
-
----
-
-## 2. Quick start — hosted API
-
-Run this once on any box/VM/container host (it bundles Chromium for you):
+## 1. Install
 
 ```bash
-git clone <this-repo> aws-calc && cd aws-calc
-docker compose up -d            # builds + starts on port 8080
-curl http://localhost:8080/health      # {"status":"ok","baking":true}
+pipx install aws-calculator-mcp        # recommended (isolated)
+# or
+pip install aws-calculator-mcp
 ```
 
-That's the whole server. Put it behind a domain/HTTPS if you want public access,
-e.g. `https://aws-calc.yourcompany.com`. Now share that URL with everyone — they
-use it from Claude, ChatGPT, scripts, etc. (sections below).
+That's it. On the **first** estimate it downloads the Chromium engine once
+(~150 MB) to compute costs; every run after is instant. (Debian/Ubuntu "externally
+managed" error with `pip`? use `pipx`, or add `--break-system-packages`.)
 
-No Docker? Run it directly:
+## 2. Quick start — plain English
 
 ```bash
-pip install ".[server]"          # fastapi + uvicorn + playwright
-playwright install chromium
-aws-calc-api                     # serves on :8080  (honors $PORT)
+aws-calc --prompt "3 t3.large EC2 with 50GB each, an RDS MySQL db.m5.large 100GB \
+multi-az, a 500GB S3 bucket, CloudFront 1TB, 10 lambdas with 2M requests, an ALB \
+and an NLB in Mumbai"
 ```
 
-### Deploy on Render (one click)
+It shows **exactly what it understood**, then returns the link with costs baked in:
 
-This repo ships a `render.yaml` Blueprint and a `Dockerfile` (Chromium baked in).
+```
+   Understood from your prompt:
+     • ec2 (instances=3, instance_type=t3.large, storage_gb=50)
+     • rds mysql (instance_type=db.m5.large, storage_gb=100, deployment=multi-az)
+     • s3 (storage_gb=500)
+     ...
+   Monthly cost: $782.00 USD
+   🔗 https://calculator.aws/#/estimate?id=...
+```
 
-1. Push the repo to GitHub.
-2. Render → **New → Blueprint** → connect the repo → **Apply**.
-   (Or **New → Web Service → Docker** and pick this repo.)
-3. Render builds the image, injects `$PORT`, and exposes a public HTTPS URL like
-   `https://aws-calc-api.onrender.com`. Health check: `/health`.
-4. Use that URL as `AWS_CALC_API_URL` everywhere.
+Add `--group` to organise the estimate into categories (Compute, Database, …).
+Misspellings are tolerated (`lamda`, `buckit`, `dynmodb`, `cloud front` all work).
 
-> **Memory:** Chromium needs headroom — use Render's **Standard** plan (2 GB).
-> On 512 MB plans baking can OOM, in which case the API still returns a working
-> *draft* link (costs appear after one "Update estimate" click). Same applies to
-> Fly.io, Railway, ECS, Cloud Run, etc. — any Docker host works.
+## 3. Interactive mode
 
----
-
-## 3. Use it with Claude (MCP)
-
-### Option A — thin client (recommended, no browser)
-
-Install the packaged module (lightweight — just `mcp` + `httpx`):
+Don't want to remember flags? Just run:
 
 ```bash
-pipx install aws-calculator-mcp        # or:  pip install aws-calculator-mcp
+aws-calc -i        # or simply `aws-calc` with no arguments
 ```
 
-This gives you three commands: `aws-calc-mcp` (MCP server), `aws-calc` (CLI),
-`aws-calc-api` (REST server). Point the MCP at your hosted API in
-`claude_desktop_config.json` (Claude Desktop) or your IDE's MCP config:
+It walks you through it:
+
+```
+Estimate name [My Estimate]: Prod Stack
+AWS region (e.g. us-east-1, ap-south-1) [us-east-1]: ap-south-1
+Group services by category? (y/n) [y]: y
+Describe your infrastructure: 2 m5.large EC2, RDS MySQL db.m5.large 100GB, 500GB S3, an ALB
+→ 🔗 https://calculator.aws/#/estimate?id=...
+```
+
+## 4. All CLI commands
+
+```bash
+# plain-English prompt
+aws-calc --prompt "2 m5.large ec2, rds mysql db.m5.large 100gb, 1tb s3"
+
+# group into categories, pin a region
+aws-calc --group --region ap-south-1 --prompt "ec2, rds, s3, alb, waf"
+
+# interactive walkthrough
+aws-calc --interactive
+
+# one explicit service (full control)
+aws-calc --service EC2 --region us-east-1 \
+         --config '{"instances":2,"instance_type":"t3.large","storage_gb":50}'
+
+# from a JSON file (full control over groups/services)
+aws-calc --file estimate.json
+
+# pipe a sentence in, or JSON in — JSON out for scripts/CI
+echo "3 t3.medium ec2 and 1tb s3" | aws-calc --json
+cat estimate.json | aws-calc --json
+
+# fast draft link (skip cost-baking)
+aws-calc --prompt "..." --no-costs
+
+# name it
+aws-calc --name "Client Proposal" --prompt "..."
+```
+
+Flags: `--prompt/-p`, `--interactive/-i`, `--group`, `--region/-r`, `--service/-s`,
+`--config/-c`, `--file/-f`, `--name/-n`, `--no-costs`, `--json`.
+
+## 5. Use it in Claude / Cursor / IDEs (MCP)
+
+After `pipx install aws-calculator-mcp`, add to your MCP config
+(`claude_desktop_config.json`, Cursor, VS Code Continue, Windsurf, …):
 
 ```json
 {
   "mcpServers": {
     "aws-calculator": {
-      "command": "aws-calc-mcp",
-      "env": { "AWS_CALC_API_URL": "https://aws-calc.yourcompany.com" }
+      "command": "aws-calc-mcp"
     }
   }
 }
 ```
 
-Zero-install alternative (no global install) using **uv**:
+Zero-install variant (via uv): `"command": "uvx", "args": ["--from","aws-calculator-mcp","aws-calc-mcp"]`.
 
-```json
-{ "mcpServers": { "aws-calculator": {
-  "command": "uvx", "args": ["--from","aws-calculator-mcp","aws-calc-mcp"],
-  "env": { "AWS_CALC_API_URL": "https://aws-calc.yourcompany.com" } } } }
-```
+Then just chat: *"Create an AWS estimate: 3 t3.large web servers, an RDS MySQL
+db.m5.large with 100 GB, a 500 GB S3 bucket, grouped by category."* The model calls
+the `create_estimate` tool (which accepts structured services **or** a `prompt`,
+plus `group`) and returns the link.
 
-### Option B — all local (no server to host, but needs Chromium here)
+## 6. Use it from ChatGPT / automation (REST)
 
-```bash
-pipx install "aws-calculator-mcp[local]"     # adds Playwright
-playwright install chromium
-```
-
-Same config, **without** the `AWS_CALC_API_URL` line.
-
-> Installing from source instead of PyPI? `pip install -e .` (client) or
-> `pip install -e ".[local]"` / `".[server]"`.
-
-Then just ask Claude: *"Create an AWS estimate for 3 t3.large web servers, an RDS
-MySQL db.m5.large with 100 GB, and a 500 GB S3 bucket."* Claude calls the
-`create_estimate` tool and returns the link.
-
-> Works in any MCP client: Claude Desktop, Claude Code, Cursor, VS Code (Continue),
-> Windsurf, etc. — anything that speaks MCP.
-
----
-
-## 4. Use it with ChatGPT
-
-ChatGPT uses the REST API via a **Custom GPT Action** (no MCP needed):
-
-1. Host the API ([§2](#2-quick-start--hosted-api)) on a public HTTPS URL.
-2. ChatGPT → **Create a GPT** → **Configure** → **Actions** → **Add action**.
-3. **Import from URL**: `https://aws-calc.yourcompany.com/openapi.json`
-   (FastAPI auto-generates this — no schema to write by hand).
-4. Save. Now tell your GPT: *"Estimate a serverless API: Lambda 100M requests,
-   DynamoDB on-demand, 1 TB S3."* It calls `POST /v1/estimate` and returns the link.
-
-The same OpenAPI spec works for any LLM-tool framework that imports OpenAPI
-(LangChain, LlamaIndex, Zapier, Make, n8n, etc.).
-
----
-
-## 5. Use it from any tool / automation (REST)
+Optional — run the REST API yourself (only if you want an HTTP endpoint):
 
 ```bash
-curl -X POST https://aws-calc.yourcompany.com/v1/estimate \
-  -H "Content-Type: application/json" \
-  -d '{
-    "estimate_name": "My Stack",
-    "services": [
-      {"service": "EC2", "region": "ap-south-1",
-       "config": {"instances": 2, "instance_type": "t3.large", "storage_gb": 50}},
-      {"service": "S3", "region": "ap-south-1", "config": {"storage_gb": 500}}
-    ]
-  }'
+pip install "aws-calculator-mcp[api]"
+aws-calc-api                 # serves on :8080  (honors $PORT)
 ```
-
-```json
-{ "ok": true, "url": "https://calculator.aws/#/estimate?id=…",
-  "services": 2, "monthly": 110.66, "upfront": 0, "baked": true }
-```
-
-Or just send a **plain-English `prompt`** and let the server build the services:
 
 ```bash
-curl -X POST https://aws-calc.yourcompany.com/v1/estimate \
-  -H "Content-Type: application/json" \
-  -d '{"prompt": "2 m5.large EC2, RDS MySQL db.m5.large 100GB, 500GB S3, CloudFront 1TB"}'
-# response includes a "parsed" list showing what was understood
+curl -X POST http://localhost:8080/v1/estimate -H "Content-Type: application/json" \
+  -d '{"prompt": "2 m5.large EC2, RDS MySQL db.m5.large 100GB, 500GB S3", "group": true}'
 ```
 
-Endpoints: `GET /health`, `GET /v1/services`, `GET /v1/regions`,
-`POST /v1/estimate`. Interactive docs at `/docs`.
+Endpoints: `GET /health`, `GET /v1/services`, `GET /v1/regions`, `POST /v1/estimate`.
+Interactive docs at `/docs`; OpenAPI at `/openapi.json` (import that into a **ChatGPT
+Custom GPT Action** to use it from ChatGPT). Point other installs at it with
+`export AWS_CALC_API_URL=http://your-host:8080` so they skip local baking.
 
----
+## 7. Supported services & config
 
-## 6. Use it from the command line / .exe
-
-**Plain English (easiest — no JSON):**
-```bash
-aws-calc --prompt "3 t3.large EC2 with 50 GB each, an RDS MySQL db.m5.large 100 GB \
-multi-az, a 500 GB S3 bucket, CloudFront 1 TB transfer, 10 lambdas with 2M requests, \
-an ALB and an NLB in Mumbai"
-```
-It parses your sentence, **shows exactly what it understood**, and returns the link.
-You can also just pipe a sentence: `echo "2 m5.large ec2 and 1 TB s3" | aws-calc`.
-
-**Other input styles:**
-```bash
-# from a JSON file (full control)
-aws-calc --file examples/estimate.json
-
-# one service via flags
-aws-calc --name "Quick" --service EC2 --region ap-south-1 \
-         --config '{"instances":2,"instance_type":"t3.large","storage_gb":50}'
-
-# JSON in / JSON out (scripts & CI)
-cat examples/estimate.json | aws-calc --json
-```
-
-Point at a hosted baker (no local Chromium) with `export AWS_CALC_API_URL=…`.
-
-**Make a standalone `.exe`** (no Python on the target machine):
-
-```bash
-pip install pyinstaller
-pyinstaller --onefile --name aws-calc src/aws_calc_mcp/cli.py
-# dist/aws-calc.exe  — ships as a single file; set AWS_CALC_API_URL to skip Chromium
-```
-
----
-
-## 7. Writing an estimate
-
-Every interface accepts the same shape:
-
-```jsonc
-{
-  "estimate_name": "My Stack",
-  "groups": [                          // optional — organise services by category
-    {
-      "group_name": "Compute",
-      "services": [
-        { "service": "EC2", "region": "us-east-1", "description": "Web tier",
-          "config": { "instances": 2, "instance_type": "m5.large", "storage_gb": 50 } }
-      ]
-    }
-  ],
-  "services": [],                       // OR a flat list when you don't need groups
-  "compute_costs": true                // bake real costs (default true)
-}
-```
-
-- **service** — name (see [§8](#8-supported-services)); case-insensitive, aliases ok.
-- **region** — code like `us-east-1`, `ap-south-1`, `eu-west-1` (`list_regions`).
-- **config** — service-specific params ([§7 examples](#example-config-values)).
-
-### Example config values
-
-```
-EC2:        instances, instance_type, os, pricing, term, upfront, storage_type,
-            storage_gb, data_outbound_gb, utilization, hours_per_day
-Lambda:     requests, duration_ms, memory_mb, arch
-Fargate:    tasks, vcpu, memory_gb, storage_gb
-S3:         storage_gb, storage_class, put_requests, get_requests, data_returned_gb
-EBS:        volumes, storage_type, storage_gb
-RDS *:      instance_type, storage_gb, deployment (single-az|multi-az), pricing
-Aurora:     engine (mysql|postgresql), nodes, instance_type
-DynamoDB:   mode (provisioned|on-demand), read_capacity, write_capacity, storage_gb
-ElastiCache:engine (redis|valkey|memcached), nodes, node_type, pricing
-CloudFront: data_transfer_gb, https_requests
-API Gateway:http_requests_million, rest_requests_million
-ALB/NLB:    load_balancers, data_processed_gb, requests_per_sec
-VPC:        public_ips, nat_gateways, nat_data_gb, vpn_connections, tgw_attachments
-Bedrock:    requests_per_min, input_tokens, output_tokens
-EDR:        source_servers, disks, storage_gb, retention_days
-WAF:        web_acls, rules_per_acl, requests_millions
-CloudWatch: metrics, logs_gb, dashboards, alarms
-```
-
-Ask `list_services` (MCP) or `GET /v1/services` (REST) for the full set.
-
----
-
-## 8. Supported services
-
-~50 services, tested end-to-end against AWS's own pricing engine:
+~50 services, tested against AWS's own pricing engine:
 
 | Category | Services |
 |----------|----------|
-| Compute  | **EC2**, **Lambda**, **Fargate**, **EKS**, **Lightsail** |
-| Storage  | **S3**, **EBS**, **EFS**, **ECR** |
-| Database | **RDS** (MySQL, PostgreSQL, Oracle, SQL Server, MariaDB), **Aurora** (MySQL/PostgreSQL), **DynamoDB**, **Redshift**, **OpenSearch**, **ElastiCache** (Redis/Valkey/Memcached) |
-| Network  | **CloudFront**, **Route 53**, **API Gateway**, **ELB/ALB/NLB**, **VPC**, **Network Firewall**, **Site-to-Site VPN**, **NAT Gateway**, **Transit Gateway**, **PrivateLink** |
-| Security | **WAF**, **GuardDuty**, **KMS**, **Cognito**, **Inspector**, **Security Hub** |
-| Mgmt     | **CloudWatch**, **CloudTrail**, **Config** |
-| Messaging| **SQS**, **SNS**, **SES**, **Kinesis** |
-| AI / DR  | **Bedrock**, **Elastic Disaster Recovery (EDR/DRS)** |
-| Dev      | **CodeBuild** |
+| Compute  | EC2, Lambda, Fargate, EKS, Lightsail |
+| Storage  | S3, EBS, EFS, ECR |
+| Database | RDS (MySQL, PostgreSQL, Oracle, SQL Server, MariaDB), Aurora (MySQL/PostgreSQL), DynamoDB, Redshift, OpenSearch, ElastiCache (Redis/Valkey/Memcached) |
+| Network  | CloudFront, Route 53, API Gateway, ELB/ALB/NLB, VPC, Network Firewall, Site-to-Site VPN, NAT Gateway, Transit Gateway, PrivateLink |
+| Security | WAF, GuardDuty, KMS, Cognito, Inspector, Security Hub |
+| Mgmt     | CloudWatch, CloudTrail, Config |
+| Messaging| SQS, SNS, SES, Kinesis |
+| AI / DR  | Bedrock, Elastic Disaster Recovery (EDR/DRS) |
+| Dev      | CodeBuild |
 
-A ready-made **`standard_calc.py`** builds a full 12-service production web-app
-estimate (auto-scaling EC2, ALB, API Gateway, WAF, CloudTrail, RDS, DynamoDB,
-CloudFront, S3, SQS, Lambda, AWS Backup) — run it as a worked example.
+When writing JSON (`--file` or the MCP/REST `services`/`groups`), each service is
+`{"service","region","description","config"}`. Common `config` keys:
 
----
+```
+EC2:        instances, instance_type, os, storage_gb, pricing, term, upfront, hours_per_day
+Lambda:     requests, duration_ms, memory_mb
+S3:         storage_gb, get_requests, put_requests, data_returned_gb
+RDS *:      instance_type, storage_gb, deployment (single-az|multi-az)
+Aurora:     engine (mysql|postgresql), nodes, instance_type
+DynamoDB:   mode (provisioned|on-demand), read_capacity, write_capacity, storage_gb
+ElastiCache:engine, nodes, node_type
+CloudFront: data_transfer_gb, https_requests
+API Gateway:http_requests_million
+ALB/NLB:    load_balancers, data_processed_gb
+```
+Full list: `GET /v1/services`, or ask an MCP client to "list services".
 
-## 9. Commitment pricing (1yr / 3yr)
-
-EC2 supports Savings Plans / Reserved terms via `config`:
+## 8. Commitment pricing & auto-scaling
 
 ```jsonc
-{ "service": "EC2", "config": {
-    "instances": 2, "instance_type": "m5.large",
-    "pricing": "compute-savings",   // or instance-savings | reserved | on-demand | spot
-    "term": "3yr",                  // 1yr | 3yr
-    "upfront": "all"                // none | partial | all
+{"service":"EC2","config":{
+  "instance_type":"m5.large", "instances":2,
+  "pricing":"compute-savings",  // or instance-savings | reserved | on-demand | spot
+  "term":"3yr",                 // 1yr | 3yr
+  "upfront":"all"               // none | partial | all
 }}
 ```
+Verified: m5.large ×2 — On-Demand **$140** → Savings 1yr **$103** → 3yr **$71**.
+Model part-time / auto-scaling fleets with `"hours_per_day": 5` or `"utilization": 30`.
+RDS/Aurora/Redshift/ElastiCache accept `"pricing":"reserved"`.
 
-Verified: m5.large ×2 — On-Demand **$140** → Savings 1yr **$103** → Savings 3yr **$71**.
-On-demand also accepts `utilization` (%) or `hours_per_day` to model part-time /
-auto-scaling fleets. RDS / Aurora / Redshift / ElastiCache accept `pricing: "reserved"`.
+## 9. How it works
 
----
-
-## 10. How it works
-
-The AWS Pricing Calculator computes prices **client-side in the browser** from
-static price files and only stores the resulting numbers in a saved estimate —
-there is no public server-side compute endpoint. So this tool:
-
-1. Builds the exact JSON payload AWS expects for each service (`services.py`).
-2. `POST`s it to AWS's `saveAs` API → a draft estimate (`core.py`).
-3. Opens the draft in headless Chromium, clicks **Update estimate** so AWS's own
-   engine recomputes, then **Share → Agree** to re-save with real costs (`compute.py`).
-4. Returns the final link — costs baked in, visible to anyone who opens it.
-
-Because step 3 uses **AWS's own engine**, numbers always match calculator.aws and
-there is no pricing engine to maintain. Step 3 is the only part needing a browser,
-and it runs only on the host.
-
----
-
-## 11. Architecture & files
+The AWS calculator computes prices **client-side in the browser** and only stores
+the numbers in a saved estimate — there's no public compute endpoint. So this tool:
+builds the exact payload AWS expects (`services.py`) → POSTs it to AWS's `saveAs`
+API → opens the draft in a headless browser, clicks **Update estimate** so AWS's own
+engine computes costs, then **Share** to re-save with them baked in (`compute.py`).
+Because it uses AWS's engine, numbers always match calculator.aws.
 
 ```
-pyproject.toml             Package metadata + entry points (aws-calc-mcp/-api, aws-calc).
-src/aws_calc_mcp/
-  services.py   Pure builders: service name + config → AWS payload JSON. No deps.
-  parser.py     Natural-language → services (the --prompt / "prompt" field). No deps.
-  core.py       Shared logic: build → save → bake. httpx only. Remote/local switch.
-  compute.py    Optional cost-baking via Playwright/Chromium (host-only).
-  server.py     MCP server (stdio) — thin wrapper over core.
-  api_server.py REST API (FastAPI) — the hosted baker. Auto OpenAPI at /openapi.json.
-  cli.py        Command-line interface; PyInstaller-friendly.
-standard_calc.py           Worked 12-service example estimate.
-Dockerfile / docker-compose.yml / render.yaml   One-command hosting (Chromium in image).
-requirements*.txt          Optional pinned deps; pyproject is the source of truth.
+parser.py    plain English → services            core.py     build → save → bake
+services.py  service + config → AWS payload       compute.py  headless-browser baking
+server.py    MCP (stdio)   api_server.py REST     cli.py      CLI + interactive
 ```
 
-Console commands (after `pip install`): **`aws-calc-mcp`** (MCP server),
-**`aws-calc`** (CLI), **`aws-calc-api`** (REST server). Or run modules directly:
-`python -m aws_calc_mcp.server`.
+## 10. Limitations
 
-`AWS_CALC_API_URL` is the switch: set → clients forward to the hosted baker (no
-local browser); unset → bake locally if Chromium is present, else return a draft
-link (costs appear after one "Update estimate" click).
-
----
-
-## 12. Limitations
-
-- A few services may show **$0** until you set a value on the AWS page after opening:
-  **AWS Backup** (backup-storage field is nested where the save API can't reach),
-  **Transfer Family** (protocol hash), **CodePipeline** (near-free), **EC2 *standard*
-  Reserved Instances** (use Savings Plans, which work), **DynamoDB on-demand**
-  (provisioned works). They never break an estimate.
-- **Bedrock** uses the default Amazon model (token-rate based); a specific
-  third-party model (Claude, Llama…) needs that model's selector hash.
-- The cost-baking step depends on AWS's (undocumented) calculator save API and
-  client behavior. If AWS changes it, the host needs an update — clients don't.
+- A few services may show **$0** until you set a value on the page after opening:
+  **AWS Backup** (nested form the save API can't reach), **Transfer Family**,
+  **CodePipeline** (near-free), **EC2 *standard* Reserved** (use Savings Plans),
+  **DynamoDB on-demand** (provisioned works).
+- **Bedrock** uses the default Amazon model (token-rate based).
+- The natural-language parser is heuristic — name services explicitly for best
+  results (an MCP client like Claude parses free-form prose more flexibly).
+- Cost-baking runs a headless browser locally (auto-installed). On a server, that's
+  ~1–2 GB RAM during baking. If a host can't run it, you still get a working draft
+  link (costs appear after one "Update estimate" click).
 
 ---
 
-## 13. Maintenance
-
-AWS bumps the calculator's internal service `version`/`estimateFor` values over
-time. If a service starts showing as read-only/incompatible or $0, refresh its
-`version`/`estimateFor`/field names in `services.py` from a live capture (open the
-service on calculator.aws, fill it, Share, and read the `saveAs` request payload in
-DevTools → Network). Each builder in `services.py` documents its verified fields.
-
----
-
-## Contributing & support
-
-Issues and PRs welcome at
-[github.com/vireshsolanki/aws-calculator-mcp](https://github.com/vireshsolanki/aws-calculator-mcp).
-
-If this saved you time, you can support development:
-
-<a href="https://www.buymeacoffee.com/vireshsolanki">
-  <img src="https://cdn.buymeacoffee.com/buttons/v2/default-yellow.png" alt="Buy Me A Coffee" height="50" width="210">
-</a>
-
-> Not affiliated with Amazon Web Services. Uses the public calculator.aws endpoints.
-> MIT licensed.
+Issues & PRs: [github.com/vireshsolanki/aws-calculator-mcp](https://github.com/vireshsolanki/aws-calculator-mcp)
+· MIT licensed · not affiliated with AWS (uses the public calculator.aws endpoints).

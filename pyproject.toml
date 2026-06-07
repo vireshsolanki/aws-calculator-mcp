@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "aws-calculator-mcp"
-version = "1.1.0"
+version = "1.2.0"
 description = "Turn a list of AWS services into an official, shareable AWS Pricing Calculator link with real costs baked in. MCP server + REST API + CLI."
 readme = "README.md"
 license = "MIT"
@@ -17,29 +17,28 @@ classifiers = [
     "Operating System :: OS Independent",
 ]
 
-# Client dependencies only — lightweight, NO browser. Enough to run the MCP/CLI
-# against a hosted baker (AWS_CALC_API_URL).
+# Everything needed to work out-of-the-box, including the browser engine for
+# cost-baking. Chromium itself is auto-downloaded on first use, so the user runs
+# nothing extra.
 dependencies = [
     "mcp>=1.0.0",
     "httpx>=0.27.0",
+    "playwright>=1.40.0",
 ]
 
 [project.optional-dependencies]
-# Local cost-baking (needs a browser). Run `playwright install chromium` after.
-local = ["playwright>=1.40.0"]
-# Hosted REST API server (the baker). Includes the browser engine.
-server = ["fastapi>=0.110.0", "uvicorn[standard]>=0.27.0", "playwright>=1.40.0"]
+# Optional: run the REST API server yourself (FastAPI). Not needed for MCP/CLI.
+api = ["fastapi>=0.110.0", "uvicorn[standard]>=0.27.0"]
 
 [project.scripts]
 aws-calc-mcp = "aws_calc_mcp.server:run"   # MCP server (stdio) for Claude / IDEs
-aws-calc     = "aws_calc_mcp.cli:main"     # command-line interface
-aws-calc-api = "aws_calc_mcp.api_server:run"  # REST API (needs [server] extras)
+aws-calc     = "aws_calc_mcp.cli:main"     # command-line interface (also interactive)
+aws-calc-api = "aws_calc_mcp.api_server:run"  # REST API (needs [api] extras)
 
 [project.urls]
 Homepage      = "https://github.com/vireshsolanki/aws-calculator-mcp"
 Repository    = "https://github.com/vireshsolanki/aws-calculator-mcp"
 Issues        = "https://github.com/vireshsolanki/aws-calculator-mcp/issues"
-"Buy Me a Coffee" = "https://www.buymeacoffee.com/vireshsolanki"
 
 [tool.setuptools.packages.find]
 where = ["src"]
