@@ -127,6 +127,9 @@ _KEYWORDS = [
     (r"\bbackup\b", "aws backup"),
     (r"\b(disaster recovery|\bdrs\b|\bedr\b)", "edr"),
     (r"\bec2\b|\binstances?\b|\bvms?\b|\bservers?\b", "ec2"),
+    # vague-intent words (low priority; specific names above always win)
+    (r"\bweb\s?app\b|\bweb\s?site\b|\bwebsite\b", "ec2"),
+    (r"\bdatabase\b", "rds mysql"),
 ]
 
 _DEFAULT_REGION = "us-east-1"
@@ -270,6 +273,24 @@ def group_services(services: list[dict]) -> list[dict]:
     return [{"group_name": cat, "services": buckets[cat]} for cat in order]
 
 
+def _add_snapshot(cfg: dict, clause: str) -> None:
+    """Detect 'daily/weekly/monthly snapshot' (+ optional GB changed) in a clause."""
+    if "snapshot" not in clause:
+        return
+    if re.search(r"\bweekly\b", clause):
+        freq = "weekly"
+    elif re.search(r"\bmonthly\b", clause):
+        freq = "monthly"
+    else:
+        freq = "daily"   # 'snapshot' with no cadence -> assume daily
+    # only an amount stated AFTER 'snapshot' is the per-snapshot change; a GB before
+    # it ("50GB storage ... snapshot") is the volume size, not the snapshot delta.
+    m = re.search(r"snapshot\w*\s*(?:of\s*|each\s*)?(\d[\d.]*)\s*(gb|tb)", clause)
+    amt = int(float(m.group(1)) * (1024 if m.group(2) == "tb" else 1)) if m else None
+    cfg["snapshot_frequency"] = freq
+    cfg["snapshot_changed_gb"] = amt if amt is not None else 10  # assume 10 GB/snapshot
+
+
 def _config_for(name: str, clause: str, itype: str | None, qty: int) -> dict:
     gb = _storage_gb(clause)
     reqs = _requests_per_month(clause)
@@ -290,6 +311,7 @@ def _config_for(name: str, clause: str, itype: str | None, qty: int) -> dict:
             cfg.update(pricing="compute-savings", term="3yr")
         elif re.search(r"\b(1\s*yr|1-year|one year|reserved|savings)\b", clause):
             cfg.update(pricing="compute-savings", term="1yr")
+        _add_snapshot(cfg, clause)
     elif name == "lambda":
         cfg["requests"] = reqs or 1_000_000
         cfg["duration_ms"] = 200
@@ -307,6 +329,7 @@ def _config_for(name: str, clause: str, itype: str | None, qty: int) -> dict:
     elif name in ("ebs",):
         cfg["volumes"] = qty
         cfg["storage_gb"] = gb or 100
+        _add_snapshot(cfg, clause)
     elif name == "efs":
         cfg["storage_gb"] = gb or 100
     elif name == "ecr":
@@ -430,7 +453,6 @@ def parse_prompt(text: str) -> tuple[list[dict], list[str], list[str]]:
         cfg = _config_for(name, segment, itype, qty)
         services.append({"service": name, "region": region,
                          "description": segment.strip()[:80], "config": cfg})
-        notes.append(f"{name} ({', '.join(f'{k}={v}' for k, v in cfg.items()) or 'defaults'})")
 
     for raw in clauses:
         clause = _normalize_clause(raw.strip())
@@ -443,6 +465,8 @@ def parse_prompt(text: str) -> tuple[list[dict], list[str], list[str]]:
             name = _detect_service(clause, itype)
             if name:
                 _emit(name, clause)
+            elif "snapshot" in clause:
+                pass   # snapshot is an attribute, applied to the server below
             else:
                 stripped = clause.strip(" .")
                 if re.search(r"[a-z]", stripped) and not _FILLER.match(stripped):
@@ -451,7 +475,26 @@ def parse_prompt(text: str) -> tuple[list[dict], list[str], list[str]]:
         # one or more services in this clause -> slice it per service so each gets
         # its nearby attributes (e.g. "ALB NLB cloudfront 1TB" -> 3 services).
         bounds = [0] + [m[0] for m in matches[1:]] + [len(clause)]
+        by_name: dict[str, dict] = {}
         for i, (st, en, name) in enumerate(matches):
-            _emit(name, clause[bounds[i]:bounds[i + 1]])
+            seg = clause[bounds[i]:bounds[i + 1]]
+            cfg = _config_for(name, seg, _instance_type(seg), _qty(seg))
+            entry = {"service": name, "region": region,
+                     "description": seg.strip()[:80], "config": cfg}
+            # same service twice in one clause (e.g. 'RDS database') -> keep richest
+            if name not in by_name or len(cfg) > len(by_name[name]["config"]):
+                by_name[name] = entry
+        services.extend(by_name.values())
 
+    # snapshots are commonly described separately ("...and daily snapshot of 20GB").
+    # Attach any snapshot spec to the EC2/EBS services that don't already have one.
+    if "snapshot" in low:
+        for s in services:
+            if s["service"] in ("ec2", "ebs") and "snapshot_frequency" not in s["config"]:
+                _add_snapshot(s["config"], low)
+
+    # build the human-readable notes AFTER all post-processing so they reflect
+    # everything that was applied (e.g. snapshots attached from a separate clause).
+    notes = [f"{s['service']} ({', '.join(f'{k}={v}' for k, v in s['config'].items()) or 'defaults'})"
+             for s in services]
     return services, notes, unknown
