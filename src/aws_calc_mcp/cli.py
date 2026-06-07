@@ -44,6 +44,7 @@ from . import core
 
 def _parse_args(argv):
     p = argparse.ArgumentParser(description="Create an AWS Pricing Calculator estimate link.")
+    p.add_argument("--prompt", "-p", help="Describe your infra in plain English (we build the JSON).")
     p.add_argument("--file", "-f", help="Path to a JSON estimate spec.")
     p.add_argument("--name", "-n", default="My Estimate", help="Estimate name.")
     p.add_argument("--service", "-s", help="Single service name (quick mode).")
@@ -55,6 +56,8 @@ def _parse_args(argv):
 
 
 def _load_spec(args) -> dict:
+    if args.prompt:
+        return {"estimate_name": args.name, "prompt": args.prompt}
     if args.file:
         with open(args.file) as fh:
             return json.load(fh)
@@ -64,9 +67,12 @@ def _load_spec(args) -> dict:
     if not sys.stdin.isatty():
         data = sys.stdin.read().strip()
         if data:
+            # bare text (not JSON) is treated as a prompt
+            if not data.lstrip().startswith("{"):
+                return {"estimate_name": args.name, "prompt": data}
             return json.loads(data)
-    raise SystemExit("No input. Use --file, --service, or pipe JSON via stdin. "
-                     "See --help for the spec format.")
+    raise SystemExit("No input. Use --prompt \"...\", --file, --service, or pipe text/JSON "
+                     "via stdin. See --help.")
 
 
 async def _run(spec: dict, compute_costs: bool) -> dict:
@@ -74,6 +80,7 @@ async def _run(spec: dict, compute_costs: bool) -> dict:
         estimate_name=spec.get("estimate_name", "My Estimate"),
         groups=spec.get("groups", []),
         services=spec.get("services", []),
+        prompt=spec.get("prompt"),
         compute_costs=compute_costs,
     )
 

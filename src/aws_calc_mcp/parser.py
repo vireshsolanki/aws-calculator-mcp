@@ -1,0 +1,325 @@
+"""
+Natural-language → estimate parser.
+
+Lets users describe infrastructure in plain English instead of writing JSON, e.g.
+
+    "3 t3.large EC2 with 50 GB each, an RDS MySQL db.m5.large 100 GB,
+     a 500 GB S3 bucket, CloudFront 1 TB transfer, and an ALB"
+
+It's a pragmatic heuristic parser (no LLM, no API key) covering the most common
+services and phrasings. For free-form prose, an MCP client (Claude/ChatGPT) will
+still parse more flexibly — but this makes the CLI and REST API prompt-friendly.
+Every parse returns the structured services it understood so the user can verify.
+"""
+
+import re
+
+_NUM_WORDS = {
+    "a": 1, "an": 1, "one": 1, "two": 2, "three": 3, "four": 4, "five": 5,
+    "six": 6, "seven": 7, "eight": 8, "nine": 9, "ten": 10, "twelve": 12,
+}
+
+# service keyword -> canonical builder name in services._SERVICES
+_KEYWORDS = [
+    (r"\baurora\s+postgres\w*", "aurora postgresql"),
+    (r"\baurora\s+mysql", "aurora mysql"),
+    (r"\baurora\b", "aurora"),
+    (r"\brds\s+postgres\w*", "rds postgresql"),
+    (r"\brds\s+mysql", "rds mysql"),
+    (r"\brds\s+oracle", "rds oracle"),
+    (r"\brds\s+(sql\s*server|mssql)", "rds sqlserver"),
+    (r"\brds\s+mariadb", "rds mariadb"),
+    (r"\b(rds|relational database)\b", "rds mysql"),
+    (r"\bdynamo\s?db\b", "dynamodb"),
+    (r"\bredshift\b", "redshift"),
+    (r"\bopensearch\b|\belasticsearch\b", "opensearch"),
+    (r"\b(elasticache|memcached)\b", "elasticache"),
+    (r"\bredis\b", "redis"),
+    (r"\blambdas?\b|\bfunctions?\b", "lambda"),
+    (r"\bfargate\b", "fargate"),
+    (r"\beks\b|\bkubernetes\b|\bk8s\b", "eks"),
+    (r"\blightsail\b", "lightsail"),
+    (r"\bbedrock\b", "bedrock"),
+    (r"\bcloudfront\b|\bcdn\b", "cloudfront"),
+    (r"\bapi\s*gateway\b", "api gateway"),
+    (r"\broute\s*53\b", "route53"),
+    (r"\b(alb|application load balancer)\b", "alb"),
+    (r"\b(nlb|network load balancer)\b", "nlb"),
+    (r"\b(elb|load balancer)\b", "elb"),
+    (r"\bnat\s*gateway\b", "nat gateway"),
+    (r"\btransit\s*gateway\b", "transit gateway"),
+    (r"\b(site[- ]to[- ]site\s*vpn|vpn)\b", "site-to-site vpn"),
+    (r"\bnetwork firewall\b", "network firewall"),
+    (r"\bprivatelink\b|\bvpc endpoint", "privatelink"),
+    (r"\bvpc\b", "vpc"),
+    (r"\bs3\b|\bbuckets?\b|\bobject storage\b", "s3"),
+    (r"\bebs\b|\bblock storage\b", "ebs"),
+    (r"\befs\b|\bfile system\b", "efs"),
+    (r"\becr\b|\bcontainer registry\b", "ecr"),
+    (r"\bsqs\b|\bqueues?\b", "sqs"),
+    (r"\bsns\b|\bnotification", "sns"),
+    (r"\bses\b|\bemail\b", "ses"),
+    (r"\bkinesis\b", "kinesis"),
+    (r"\bcloudwatch\b", "cloudwatch"),
+    (r"\bcloudtrail\b", "cloudtrail"),
+    (r"\bconfig\b", "config"),
+    (r"\bwaf\b", "waf"),
+    (r"\bguard\s*duty\b", "guardduty"),
+    (r"\binspector\b", "inspector"),
+    (r"\bsecurity hub\b", "security hub"),
+    (r"\bkms\b|\bkey management\b", "kms"),
+    (r"\bcognito\b", "cognito"),
+    (r"\bcodebuild\b", "codebuild"),
+    (r"\bcodepipeline\b", "codepipeline"),
+    (r"\bbackup\b", "aws backup"),
+    (r"\b(disaster recovery|\bdrs\b|\bedr\b)", "edr"),
+    (r"\bec2\b|\binstances?\b|\bvms?\b|\bservers?\b", "ec2"),
+]
+
+_DEFAULT_REGION = "us-east-1"
+_REGION_HINTS = {
+    "mumbai": "ap-south-1", "ap-south-1": "ap-south-1",
+    "virginia": "us-east-1", "us-east-1": "us-east-1",
+    "ohio": "us-east-2", "us-east-2": "us-east-2",
+    "oregon": "us-west-2", "us-west-2": "us-west-2",
+    "ireland": "eu-west-1", "eu-west-1": "eu-west-1",
+    "frankfurt": "eu-central-1", "eu-central-1": "eu-central-1",
+    "london": "eu-west-2", "singapore": "ap-southeast-1", "ap-southeast-1": "ap-southeast-1",
+    "tokyo": "ap-northeast-1", "sydney": "ap-southeast-2",
+}
+
+
+def _num(token: str) -> float:
+    token = token.lower().replace(",", "").strip()
+    m = re.match(r"^([\d.]+)\s*(k|m|million|thousand|bn|billion)?$", token)
+    if not m:
+        return _NUM_WORDS.get(token, 0)
+    val = float(m.group(1))
+    mult = {"k": 1e3, "thousand": 1e3, "m": 1e6, "million": 1e6,
+            "bn": 1e9, "billion": 1e9}.get(m.group(2), 1)
+    return val * mult
+
+
+def _qty(clause: str) -> int:
+    """Leading count, e.g. '3 ec2', 'two lambdas', '10 lambdas'."""
+    m = re.search(r"\b(\d+|" + "|".join(_NUM_WORDS) + r")\s*(?:x\s*)?(?=[a-z])", clause)
+    if m:
+        n = _num(m.group(1)) if m.group(1).isdigit() else _NUM_WORDS.get(m.group(1), 1)
+        if 0 < n <= 1000:
+            return int(n)
+    m = re.search(r"\b(\d+)\s*x\b", clause)
+    return int(m.group(1)) if m else 1
+
+
+def _storage_gb(clause: str):
+    m = re.search(r"(\d[\d.]*)\s*(gb|tb|mb)\b", clause)
+    if not m:
+        return None
+    val = float(m.group(1))
+    unit = m.group(2)
+    return int(val * 1024) if unit == "tb" else (round(val / 1024, 2) if unit == "mb" else int(val))
+
+
+def _requests_per_month(clause: str):
+    """Find a request/message/invocation count and normalize to per-month."""
+    m = re.search(r"(\d[\d.,]*)\s*(k|m|million|thousand|bn|billion)?\s*"
+                  r"(requests?|req|messages?|msgs?|invocations?|calls?|hits?|events?)"
+                  r"\s*(?:per\s*|/)?\s*(day|month|week|hour|sec(?:ond)?|min(?:ute)?)?", clause)
+    if not m:
+        return None
+    n = _num(f"{m.group(1)}{m.group(2) or ''}")
+    period = (m.group(4) or "month").lower()
+    factor = {"day": 30, "week": 4.345, "month": 1, "hour": 730,
+              "sec": 2_592_000, "second": 2_592_000, "min": 43_200, "minute": 43_200}.get(period, 1)
+    return int(n * factor)
+
+
+_INSTANCE_RE = re.compile(r"\b((?:db\.|cache\.)?[a-z]+\d+[a-z]*\.(?:nano|micro|small|medium|large|\d*xlarge|search))\b")
+
+
+def _instance_type(clause: str):
+    m = _INSTANCE_RE.search(clause)
+    return m.group(1) if m else None
+
+
+def _detect_service(clause: str, itype: str | None):
+    # instance type can imply the service even without a keyword
+    if itype:
+        if itype.startswith("db."):
+            for pat, name in _KEYWORDS:
+                if name.startswith(("rds", "aurora")) and re.search(pat, clause):
+                    return name
+            return "rds mysql"
+        if itype.startswith("cache."):
+            return "redis" if "redis" in clause else "elasticache"
+        if itype.endswith(".search"):
+            return "opensearch"
+    for pat, name in _KEYWORDS:
+        if re.search(pat, clause):
+            return name
+    if itype:
+        return "ec2"
+    return None
+
+
+def _config_for(name: str, clause: str, itype: str | None, qty: int) -> dict:
+    gb = _storage_gb(clause)
+    reqs = _requests_per_month(clause)
+    cfg: dict = {}
+
+    if name == "ec2":
+        cfg["instances"] = qty
+        if itype:
+            cfg["instance_type"] = itype
+        if gb:
+            cfg["storage_gb"] = gb
+        if "transfer" in clause or "outbound" in clause:
+            tg = _storage_gb(clause)
+            if tg:
+                cfg["data_outbound_gb"] = tg
+        if re.search(r"\b(3\s*yr|3-year|three year)\b", clause):
+            cfg.update(pricing="compute-savings", term="3yr")
+        elif re.search(r"\b(1\s*yr|1-year|one year|reserved|savings)\b", clause):
+            cfg.update(pricing="compute-savings", term="1yr")
+    elif name == "lambda":
+        cfg["requests"] = reqs or 1_000_000
+        cfg["duration_ms"] = 200
+        cfg["memory_mb"] = 512
+    elif name == "fargate":
+        cfg["tasks"] = qty
+        cfg["vcpu"] = 1
+        cfg["memory_gb"] = 2
+    elif name == "eks":
+        cfg["clusters"] = qty
+    elif name == "s3":
+        cfg["storage_gb"] = gb or 100
+        if reqs:
+            cfg["get_requests"] = reqs
+    elif name in ("ebs",):
+        cfg["volumes"] = qty
+        cfg["storage_gb"] = gb or 100
+    elif name == "efs":
+        cfg["storage_gb"] = gb or 100
+    elif name == "ecr":
+        cfg["storage_gb"] = gb or 10
+    elif name.startswith(("rds", "aurora")):
+        if name.startswith("rds"):
+            cfg["instance_type"] = itype or "db.m5.large"
+            cfg["storage_gb"] = gb or 100
+            if "multi" in clause:
+                cfg["deployment"] = "multi-az"
+        else:
+            cfg["instance_type"] = itype or "db.r6g.large"
+            cfg["nodes"] = qty
+    elif name == "dynamodb":
+        cfg["mode"] = "on-demand" if "on-demand" in clause or "on demand" in clause else "provisioned"
+        if cfg["mode"] == "provisioned":
+            cfg.update(read_capacity=25, write_capacity=25)
+        if gb:
+            cfg["storage_gb"] = gb
+    elif name == "redshift":
+        cfg["nodes"] = qty
+        cfg["node_type"] = itype or "ra3.xlplus"
+    elif name == "opensearch":
+        cfg["nodes"] = qty
+        cfg["instance_type"] = itype or "r5.large.search"
+    elif name in ("elasticache", "redis"):
+        cfg["nodes"] = qty
+        cfg["node_type"] = itype or "cache.m5.large"
+        cfg["engine"] = "redis" if name == "redis" else "redis"
+    elif name == "cloudfront":
+        cfg["data_transfer_gb"] = gb or 100
+        cfg["https_requests"] = reqs or 1_000_000
+    elif name == "api gateway":
+        cfg["http_requests_million"] = round((reqs or 1_000_000) / 1e6, 4)
+    elif name == "route53":
+        cfg["hosted_zones"] = qty
+        if reqs:
+            cfg["queries_million"] = round(reqs / 1e6, 4)
+    elif name in ("alb", "nlb", "elb"):
+        cfg["load_balancers"] = qty
+        cfg["data_processed_gb"] = gb or 100
+    elif name in ("sqs",):
+        cfg["requests_million"] = round((reqs or 1_000_000) / 1e6, 4)
+    elif name == "sns":
+        cfg["notifications_million"] = round((reqs or 1_000_000) / 1e6, 4)
+    elif name == "ses":
+        cfg["emails_sent_thousand"] = round((reqs or 100_000) / 1e3, 2)
+    elif name == "kinesis":
+        cfg["records_per_second"] = 1000
+        cfg["record_size_kb"] = 5
+    elif name == "cloudwatch":
+        cfg.update(metrics=50, logs_gb=gb or 50)
+    elif name == "cloudtrail":
+        cfg.update(write_events_million=1, data_ingested_gb=gb or 5)
+    elif name == "waf":
+        cfg.update(web_acls=qty, rules_per_acl=10,
+                   requests_millions=round((reqs or 1_000_000) / 1e6, 4))
+    elif name == "guardduty":
+        cfg.update(s3_data_gb=gb or 100, management_events_million=1)
+    elif name == "kms":
+        cfg.update(keys=qty, symmetric_requests=reqs or 100_000)
+    elif name == "cognito":
+        cfg["maus"] = int(reqs) if reqs else 50_000
+    elif name in ("nat gateway",):
+        cfg.update(gateways=qty, nat_data_gb=gb or 100)
+    elif name == "transit gateway":
+        cfg.update(attachments=qty, tgw_data_gb=gb or 100)
+    elif name == "site-to-site vpn":
+        cfg["connections"] = qty
+    elif name == "network firewall":
+        cfg.update(endpoints=qty, data_processed_gb=gb or 100)
+    elif name == "privatelink":
+        cfg.update(endpoints=qty)
+    elif name == "vpc":
+        cfg.update(public_ips=qty)
+    elif name == "aws backup":
+        cfg.update(daily_change_pct=5, annual_growth_pct=10)
+    elif name == "edr":
+        cfg.update(source_servers=qty, storage_gb=gb or 500)
+    elif name == "codebuild":
+        cfg["builds_per_month"] = 100
+    elif name == "lightsail":
+        cfg.update(instances=qty, bundle="medium")
+    elif name == "bedrock":
+        cfg.update(requests_per_min=100, input_tokens=1000, output_tokens=1000)
+    return cfg
+
+
+def parse_prompt(text: str) -> tuple[list[dict], list[str]]:
+    """
+    Parse a natural-language description into a list of service entries.
+    Returns (services, notes) where services feed straight into create_estimate.
+    """
+    if not text:
+        return [], []
+    region = _DEFAULT_REGION
+    low = text.lower()
+    for hint, code in _REGION_HINTS.items():
+        if hint in low:
+            region = code
+            break
+
+    services: list[dict] = []
+    notes: list[str] = []
+    # split into clauses on commas / and / with / newlines / semicolons
+    # Split on commas / "and" / newlines / semicolons — but NOT "with", so that
+    # attributes like "EC2 with 50 GB" stay attached to their service.
+    clauses = re.split(r",|\band\b|\bplus\b|;|\n", low)
+    for raw in clauses:
+        clause = raw.strip()
+        if len(clause) < 2:
+            continue
+        itype = _instance_type(clause)
+        name = _detect_service(clause, itype)
+        if not name:
+            continue
+        qty = _qty(clause)
+        cfg = _config_for(name, clause, itype, qty)
+        services.append({
+            "service": name, "region": region,
+            "description": raw.strip()[:80], "config": cfg,
+        })
+        notes.append(f"{name} ({', '.join(f'{k}={v}' for k, v in cfg.items()) or 'defaults'})")
+
+    return services, notes

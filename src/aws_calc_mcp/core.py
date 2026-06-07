@@ -42,9 +42,15 @@ API_URL = os.environ.get("AWS_CALC_API_URL", "").rstrip("/")
 
 # ── payload helpers ────────────────────────────────────────────────────────────
 
+def _safe_text(text):
+    # AWS rejects &, <, > in names, group names and descriptions.
+    if not text:
+        return text
+    return text.replace("&", "and").replace("<", "(").replace(">", ")")
+
+
 def _safe_group_name(name: str) -> str:
-    # AWS rejects group names containing &, <, >.
-    return (name or "Group").replace("&", "and").replace("<", "(").replace(">", ")")
+    return _safe_text(name) or "Group"
 
 
 def _normalise_service(svc: dict) -> dict:
@@ -81,7 +87,7 @@ def build_payload(groups_in: list | None, services_in: list | None):
             errors.append("A service entry is missing the 'service' field.")
             return
         region = entry.get("region", "us-east-1")
-        desc   = entry.get("description")
+        desc   = _safe_text(entry.get("description"))
         config = dict(entry.get("config") or {})
         try:
             payload = build(svc_name, region, desc, config)
@@ -114,7 +120,7 @@ async def save_estimate(name: str, top_services: dict, groups: dict) -> str:
 
     created = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
     body = {
-        "name": name,
+        "name": _safe_text(name) or "My Estimate",
         "services": norm_top,
         "groups": norm_groups,
         "groupSubtotal": {"monthly": 0, "upfront": 0},
@@ -138,12 +144,28 @@ async def save_estimate(name: str, top_services: dict, groups: dict) -> str:
 async def create_estimate(estimate_name: str = "My Estimate",
                           groups: list | None = None,
                           services: list | None = None,
-                          compute_costs: bool = True) -> dict:
+                          compute_costs: bool = True,
+                          prompt: str | None = None) -> dict:
     """
     Build → save → (optionally) bake an estimate.
-    Returns a structured result dict:
-      {ok, url, id, services, monthly, upfront, baked, warnings, error?}
+
+    Provide either structured `groups`/`services`, OR a natural-language `prompt`
+    (e.g. "2 t3.large EC2, an RDS MySQL db.m5.large 100GB, a 500GB S3 bucket").
+    When `prompt` is given and no structured input, it's parsed for you.
+
+    Returns: {ok, url, id, services, monthly, upfront, baked, warnings, parsed?, error?}
     """
+    parsed_note = None
+    if prompt and not groups and not services:
+        from .parser import parse_prompt
+        services, notes = parse_prompt(prompt)
+        if not services:
+            return {"ok": False,
+                    "error": "Could not recognize any AWS services in the prompt. "
+                             "Try naming services explicitly (EC2, S3, RDS, Lambda, …).",
+                    "prompt": prompt}
+        parsed_note = notes
+
     # 1. Remote mode — forward to a hosted baking API (no local browser needed).
     if API_URL:
         try:
@@ -154,7 +176,10 @@ async def create_estimate(estimate_name: str = "My Estimate",
                           "services": services or [], "compute_costs": compute_costs},
                 )
                 r.raise_for_status()
-                return r.json()
+                out = r.json()
+                if parsed_note:
+                    out["parsed"] = parsed_note
+                return out
         except Exception as e:
             return {"ok": False, "error": f"Remote API ({API_URL}) failed: {e}"}
 
@@ -190,6 +215,7 @@ async def create_estimate(estimate_name: str = "My Estimate",
         "upfront": totals.get("upfront", 0) if baked else None,
         "baked": baked,
         "warnings": errors,
+        "parsed": parsed_note,
     }
 
 
@@ -198,6 +224,9 @@ def format_result(name: str, res: dict) -> str:
     if not res.get("ok"):
         return f"❌ {res.get('error', 'Unknown error')}"
     lines = [f"✅ Estimate: **{name}**", f"   Services: {res['services']}"]
+    if res.get("parsed"):
+        lines.append("   Understood from your prompt:")
+        lines += [f"     • {p}" for p in res["parsed"]]
     if res.get("baked"):
         m, u = res.get("monthly") or 0, res.get("upfront") or 0
         lines.append(f"   Monthly cost: ${m:,.2f} USD" + (f"  (upfront ${u:,.2f})" if u else ""))

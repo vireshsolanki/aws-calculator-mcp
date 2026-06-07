@@ -43,6 +43,16 @@ async def list_tools():
                         "description": "Title for this estimate",
                         "default": "My Estimate",
                     },
+                    "prompt": {
+                        "type": "string",
+                        "description": (
+                            "Optional. A plain-English description of the infrastructure; "
+                            "the server parses it into services for you (e.g. '2 t3.large EC2, "
+                            "RDS MySQL db.m5.large 100GB, 500GB S3, CloudFront 1TB'). Prefer "
+                            "building structured 'groups'/'services' yourself when you can — "
+                            "use 'prompt' as a quick fallback."
+                        ),
+                    },
                     "compute_costs": {
                         "type": "boolean",
                         "description": (
@@ -200,6 +210,7 @@ async def _handle_create(args: dict):
         estimate_name=name,
         groups=args.get("groups", []),
         services=args.get("services", []),
+        prompt=args.get("prompt"),
         compute_costs=args.get("compute_costs", True),
     )
     return [types.TextContent(type="text", text=format_result(name, res))]

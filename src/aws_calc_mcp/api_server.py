@@ -52,6 +52,9 @@ class GroupItem(BaseModel):
 
 class EstimateRequest(BaseModel):
     estimate_name: str = "My Estimate"
+    prompt: str | None = Field(
+        None, description="Plain-English infra description; we build the services for you. "
+                          "e.g. '2 t3.large EC2, RDS MySQL db.m5.large 100GB, 500GB S3'")
     groups: list[GroupItem] = Field(default_factory=list)
     services: list[ServiceItem] = Field(default_factory=list)
     compute_costs: bool = True
@@ -84,6 +87,7 @@ async def estimate(req: EstimateRequest):
             estimate_name=req.estimate_name,
             groups=[g.model_dump() for g in req.groups],
             services=[s.model_dump() for s in req.services],
+            prompt=req.prompt,
             compute_costs=req.compute_costs,
         )
     finally:

@@ -103,7 +103,7 @@ This repo ships a `render.yaml` Blueprint and a `Dockerfile` (Chromium baked in)
 Install the packaged module (lightweight — just `mcp` + `httpx`):
 
 ```bash
-pipx install aws-calc-mcp        # or:  pip install aws-calc-mcp
+pipx install aws-calculator-mcp        # or:  pip install aws-calculator-mcp
 ```
 
 This gives you three commands: `aws-calc-mcp` (MCP server), `aws-calc` (CLI),
@@ -125,14 +125,14 @@ Zero-install alternative (no global install) using **uv**:
 
 ```json
 { "mcpServers": { "aws-calculator": {
-  "command": "uvx", "args": ["aws-calc-mcp"],
+  "command": "uvx", "args": ["--from","aws-calculator-mcp","aws-calc-mcp"],
   "env": { "AWS_CALC_API_URL": "https://aws-calc.yourcompany.com" } } } }
 ```
 
 ### Option B — all local (no server to host, but needs Chromium here)
 
 ```bash
-pipx install "aws-calc-mcp[local]"     # adds Playwright
+pipx install "aws-calculator-mcp[local]"     # adds Playwright
 playwright install chromium
 ```
 
@@ -186,6 +186,15 @@ curl -X POST https://aws-calc.yourcompany.com/v1/estimate \
   "services": 2, "monthly": 110.66, "upfront": 0, "baked": true }
 ```
 
+Or just send a **plain-English `prompt`** and let the server build the services:
+
+```bash
+curl -X POST https://aws-calc.yourcompany.com/v1/estimate \
+  -H "Content-Type: application/json" \
+  -d '{"prompt": "2 m5.large EC2, RDS MySQL db.m5.large 100GB, 500GB S3, CloudFront 1TB"}'
+# response includes a "parsed" list showing what was understood
+```
+
 Endpoints: `GET /health`, `GET /v1/services`, `GET /v1/regions`,
 `POST /v1/estimate`. Interactive docs at `/docs`.
 
@@ -193,15 +202,25 @@ Endpoints: `GET /health`, `GET /v1/services`, `GET /v1/regions`,
 
 ## 6. Use it from the command line / .exe
 
+**Plain English (easiest — no JSON):**
 ```bash
-# from a JSON file
+aws-calc --prompt "3 t3.large EC2 with 50 GB each, an RDS MySQL db.m5.large 100 GB \
+multi-az, a 500 GB S3 bucket, CloudFront 1 TB transfer, 10 lambdas with 2M requests, \
+an ALB and an NLB in Mumbai"
+```
+It parses your sentence, **shows exactly what it understood**, and returns the link.
+You can also just pipe a sentence: `echo "2 m5.large ec2 and 1 TB s3" | aws-calc`.
+
+**Other input styles:**
+```bash
+# from a JSON file (full control)
 aws-calc --file examples/estimate.json
 
-# one-liner
+# one service via flags
 aws-calc --name "Quick" --service EC2 --region ap-south-1 \
          --config '{"instances":2,"instance_type":"t3.large","storage_gb":50}'
 
-# pipe JSON in / get JSON out (great for scripts & CI)
+# JSON in / JSON out (scripts & CI)
 cat examples/estimate.json | aws-calc --json
 ```
 
@@ -334,6 +353,7 @@ and it runs only on the host.
 pyproject.toml             Package metadata + entry points (aws-calc-mcp/-api, aws-calc).
 src/aws_calc_mcp/
   services.py   Pure builders: service name + config → AWS payload JSON. No deps.
+  parser.py     Natural-language → services (the --prompt / "prompt" field). No deps.
   core.py       Shared logic: build → save → bake. httpx only. Remote/local switch.
   compute.py    Optional cost-baking via Playwright/Chromium (host-only).
   server.py     MCP server (stdio) — thin wrapper over core.
