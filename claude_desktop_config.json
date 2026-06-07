@@ -1,10 +1,7 @@
 {
   "mcpServers": {
     "aws-calculator": {
-      "command": "aws-calc-mcp",
-      "env": {
-        "AWS_CALC_API_URL": "https://your-hosted-baker.onrender.com"
-      }
+      "command": "aws-calc-mcp"
     }
   }
 }
