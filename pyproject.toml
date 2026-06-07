@@ -4,16 +4,29 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "aws-calculator-mcp"
-version = "1.2.2"
-description = "Turn a list of AWS services into an official, shareable AWS Pricing Calculator link with real costs baked in. MCP server + REST API + CLI."
+version = "1.3.0"
+description = "Describe AWS infra in plain English and get an official, shareable AWS Pricing Calculator link with real costs — as an MCP server, CLI, and REST API."
 readme = "README.md"
 license = "MIT"
 license-files = ["LICENSE"]
 requires-python = ">=3.10"
-keywords = ["aws", "pricing", "calculator", "estimate", "mcp", "cost", "finops"]
+keywords = ["aws", "pricing", "calculator", "estimate", "mcp", "cost", "finops",
+            "cloud", "devops", "claude", "chatgpt", "llm", "ai"]
 authors = [{ name = "Viresh Solanki" }]
 classifiers = [
+    "Development Status :: 5 - Production/Stable",
+    "Intended Audience :: Developers",
+    "Intended Audience :: System Administrators",
+    "Intended Audience :: Information Technology",
+    "Topic :: Utilities",
+    "Topic :: Office/Business :: Financial",
+    "Topic :: System :: Systems Administration",
+    "Environment :: Console",
     "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
     "Operating System :: OS Independent",
 ]
 

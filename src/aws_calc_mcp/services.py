@@ -53,6 +53,19 @@ def uid(prefix: str) -> str:
     return f"{prefix}-{uuid.uuid4()}"
 
 
+# EBS snapshot frequency -> snapshots per month (the value the calculator expects).
+_SNAP_FREQ = {"daily": "30", "weekly": "4", "monthly": "1", "none": "0", "off": "0", "no": "0"}
+
+
+def _snapshot(c: dict) -> tuple[str, str | None]:
+    """Return (frequency_per_month, changed_gb) from config keys
+    snapshot_frequency (daily|weekly|monthly|<n>) and snapshot_changed_gb / snapshot_gb."""
+    f = str(c.get("snapshot_frequency", c.get("snapshots", "none"))).lower().strip()
+    freq = _SNAP_FREQ.get(f, f if f.isdigit() else "0")
+    amt = c.get("snapshot_changed_gb", c.get("snapshot_gb"))
+    return freq, (str(amt) if amt is not None else None)
+
+
 # ── EC2 ─────────────────────────────────────────────────────────────────────
 # Verified: all fields from real API capture
 
@@ -136,10 +149,13 @@ def ec2(region="us-east-1", description=None, **c) -> dict:
         "workload":                    {"value": {"workloadType": wl_map.get(c.get("workload","constant").lower(),"consistent"), "data": n}},
         "instanceType":                {"value": c.get("instance_type", "t3.micro")},
         "pricingStrategy":             {"value": ps},
-        "snapshotFrequency":           {"value": "0"},
+        "snapshotFrequency":           {"value": _snapshot(c)[0]},
         "detailedMonitoringCheckbox":  {"value": c.get("detailed_monitoring", False)},
         "ec2AdvancedPricingMetrics":   {"value": int(n)},
     }
+    _snap_freq, _snap_amt = _snapshot(c)
+    if _snap_freq != "0" and _snap_amt:
+        calc["snapshotAmount"] = {"value": _snap_amt, "unit": "gb|NA"}
     if c.get("storage_gb"):
         calc["storageAmount"] = {"value": str(c["storage_gb"]), "unit": "gb|NA"}
     if c.get("storage_type", "gp3").lower() == "gp3":
@@ -498,13 +514,14 @@ def ebs(region="us-east-1", description=None, **c) -> dict:
         "st1": "Storage Throughput Optimized HDD (st1) GB Mo",
         "sc1": "Storage Cold HDD (sc1) GB Mo",
     }
+    _snap_freq, _snap_amt = _snapshot(c)
     calc = {
         "numberOfInstances":    {"value": str(c.get("volumes", 1))},
         "durationOfInstanceRuns":{"value": "730", "unit": "hours"},
         "storageType":          {"value": st_map.get(c.get("storage_type","gp3").lower(), "Storage General Purpose GB Mo")},
         "storageAmount":        {"value": str(c.get("storage_gb", 30)), "unit": "gb|NA"},
-        "snapshotFrequency":    {"value": "0"},
-        "snapshotAmount":       {"value": "0", "unit": "gb|NA"},
+        "snapshotFrequency":    {"value": _snap_freq},
+        "snapshotAmount":       {"value": _snap_amt or "0", "unit": "gb|NA"},
     }
     if c.get("iops") and "io" in c.get("storage_type","gp3"):
         calc["iopsAmount"] = {"value": str(c["iops"])}
