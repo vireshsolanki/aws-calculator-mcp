@@ -360,13 +360,20 @@ def _config_for(name: str, clause: str, itype: str | None, qty: int) -> dict:
     return cfg
 
 
-def parse_prompt(text: str) -> tuple[list[dict], list[str]]:
+# clauses that are just glue/filler — not "unrecognized services"
+_FILLER = re.compile(r"^(i (need|want|have|would like)|need|want|please|setup|set up|"
+                     r"a |an |the |some |for |in |with |to |and |of |on |our |my |"
+                     r"infra(structure)?|stack|app|application|each|per month|monthly)+$")
+
+
+def parse_prompt(text: str) -> tuple[list[dict], list[str], list[str]]:
     """
     Parse a natural-language description into a list of service entries.
-    Returns (services, notes) where services feed straight into create_estimate.
+    Returns (services, notes, unknown) — `unknown` lists clauses we couldn't map
+    to a service so callers can tell the user what was skipped.
     """
     if not text:
-        return [], []
+        return [], [], []
     region = _DEFAULT_REGION
     low = text.lower()
     for hint, code in _REGION_HINTS.items():
@@ -376,7 +383,7 @@ def parse_prompt(text: str) -> tuple[list[dict], list[str]]:
 
     services: list[dict] = []
     notes: list[str] = []
-    # split into clauses on commas / and / with / newlines / semicolons
+    unknown: list[str] = []
     # Split on commas / "and" / newlines / semicolons. Also split on "with a/an/the"
     # (introduces another service, e.g. "sqs with a lambda") but NOT "with 50 GB"
     # (an attribute), so sizes stay attached to their service.
@@ -388,6 +395,11 @@ def parse_prompt(text: str) -> tuple[list[dict], list[str]]:
         itype = _instance_type(clause)
         name = _detect_service(clause, itype)
         if not name:
+            # only flag clauses that look like they meant a service (have letters
+            # and aren't pure filler/numbers)
+            stripped = clause.strip(" .")
+            if re.search(r"[a-z]", stripped) and not _FILLER.match(stripped):
+                unknown.append(raw.strip()[:60])
             continue
         qty = _qty(clause)
         cfg = _config_for(name, clause, itype, qty)
@@ -397,4 +409,4 @@ def parse_prompt(text: str) -> tuple[list[dict], list[str]]:
         })
         notes.append(f"{name} ({', '.join(f'{k}={v}' for k, v in cfg.items()) or 'defaults'})")
 
-    return services, notes
+    return services, notes, unknown

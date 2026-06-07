@@ -1,6 +1,6 @@
 """AWS Pricing Calculator estimate generator — MCP server, REST API and CLI."""
 
-__version__ = "1.2.0"
+__version__ = "1.2.1"
 
 from .core import create_estimate, format_result  # noqa: F401
 

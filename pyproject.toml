@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "aws-calculator-mcp"
-version = "1.2.0"
+version = "1.2.1"
 description = "Turn a list of AWS services into an official, shareable AWS Pricing Calculator link with real costs baked in. MCP server + REST API + CLI."
 readme = "README.md"
 license = "MIT"

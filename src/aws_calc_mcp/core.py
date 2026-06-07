@@ -160,15 +160,40 @@ async def create_estimate(estimate_name: str = "My Estimate",
     Returns: {ok, url, id, services, monthly, upfront, baked, warnings, parsed?, error?}
     """
     parsed_note = None
+    pre_warnings: list[str] = []
     if prompt and not groups and not services:
         from .parser import parse_prompt
-        services, notes = parse_prompt(prompt)
+        services, notes, unknown = parse_prompt(prompt)
         if not services:
+            from .services import suggest_service
+            hint = ""
+            if unknown:
+                sug = suggest_service(unknown[0])
+                hint = (f" Closest match to '{unknown[0]}': {', '.join(sug)}." if sug else "")
             return {"ok": False,
-                    "error": "Could not recognize any AWS services in the prompt. "
-                             "Try naming services explicitly (EC2, S3, RDS, Lambda, …).",
+                    "error": "Couldn't recognize any AWS services in that description."
+                             + hint +
+                             " Name services explicitly, e.g. 'EC2, RDS MySQL, S3, Lambda'.",
                     "prompt": prompt}
         parsed_note = notes
+        if unknown:
+            from .services import suggest_service
+            bits = []
+            for u in unknown:
+                sug = suggest_service(u)
+                bits.append(f"'{u}'" + (f" (did you mean {sug[0]}?)" if sug else ""))
+            pre_warnings.append("Skipped (not recognized): " + "; ".join(bits))
+
+    # Validate region; warn + fall back if it's not a known AWS region code/name.
+    if region:
+        rc = region.lower().strip()
+        if rc not in REGIONS:
+            from .services import resolve_region
+            code, _ = resolve_region(region)
+            names = {v.lower() for v in REGIONS.values()}
+            if code == "us-east-1" and rc not in ("us-east-1", "us east (n. virginia)") and rc not in names:
+                pre_warnings.append(f"Region '{region}' not recognized; defaulting to us-east-1.")
+            region = code
 
     # Explicit region overrides anything guessed from the prompt.
     if region:
@@ -197,14 +222,18 @@ async def create_estimate(estimate_name: str = "My Estimate",
                 out = r.json()
                 if parsed_note:
                     out["parsed"] = parsed_note
+                if pre_warnings:
+                    out["warnings"] = pre_warnings + (out.get("warnings") or [])
                 return out
         except Exception as e:
             return {"ok": False, "error": f"Remote API ({API_URL}) failed: {e}"}
 
     # 2/3. Local mode.
     top, groups_out, total, errors = build_payload(groups, services)
+    errors = pre_warnings + errors
     if total == 0:
-        return {"ok": False, "error": "No valid services. " + "; ".join(errors),
+        return {"ok": False,
+                "error": "No valid services. " + ("; ".join(errors) or "nothing to estimate."),
                 "warnings": errors}
 
     draft_id = await save_estimate(estimate_name, top, groups_out)

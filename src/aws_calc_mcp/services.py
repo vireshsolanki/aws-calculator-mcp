@@ -1578,12 +1578,43 @@ _SERVICES: dict[str, callable] = {
 }
 
 
+# A short, friendly list of the common service names to suggest from.
+_COMMON = [
+    "EC2", "Lambda", "Fargate", "EKS", "Lightsail", "S3", "EBS", "EFS", "ECR",
+    "RDS MySQL", "RDS PostgreSQL", "Aurora MySQL", "DynamoDB", "Redshift",
+    "OpenSearch", "ElastiCache", "CloudFront", "Route53", "API Gateway",
+    "ALB", "NLB", "VPC", "NAT Gateway", "Transit Gateway", "Network Firewall",
+    "WAF", "GuardDuty", "KMS", "Cognito", "CloudWatch", "CloudTrail", "Config",
+    "SQS", "SNS", "SES", "Kinesis", "Bedrock", "EDR", "AWS Backup", "CodeBuild",
+]
+
+
+def suggest_service(name: str, n: int = 3) -> list[str]:
+    """Closest valid service names for a typo'd/unknown input."""
+    import difflib
+    key = (name or "").lower().strip()
+    # match against all aliases, then map back to a clean display name
+    hits = difflib.get_close_matches(key, _SERVICES.keys(), n=n, cutoff=0.5)
+    seen, out = set(), []
+    for h in hits:
+        disp = h.title() if " " in h else h.upper() if len(h) <= 3 else h.capitalize()
+        if disp.lower() not in seen:
+            seen.add(disp.lower())
+            out.append(h)
+    return out
+
+
 def build(service: str, region: str, description: str | None, config: dict) -> dict:
-    key = service.lower().strip()
+    key = (service or "").lower().strip()
     fn = _SERVICES.get(key)
     if not fn:
-        raise ValueError(
-            f"Unknown service '{service}'. "
-            f"Supported: {', '.join(sorted(set(_SERVICES.keys())))}"
-        )
-    return fn(region, description, **config)
+        sugg = suggest_service(key)
+        hint = f" Did you mean: {', '.join(sugg)}?" if sugg else \
+               " Try one of: EC2, S3, RDS MySQL, Lambda, DynamoDB, CloudFront…"
+        raise ValueError(f"Unknown service '{service}'.{hint} "
+                         f"(run list_services / GET /v1/services for the full list)")
+    try:
+        return fn(region, description, **config)
+    except TypeError as e:
+        # a bad/unknown config key for this service
+        raise ValueError(f"Invalid config for '{service}': {e}") from e
