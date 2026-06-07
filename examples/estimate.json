@@ -1,0 +1,21 @@
+{
+  "estimate_name": "Example Web App",
+  "groups": [
+    {
+      "group_name": "Compute",
+      "services": [
+        {"service": "EC2", "region": "us-east-1", "description": "Web servers",
+         "config": {"instances": 2, "instance_type": "t3.large", "storage_gb": 50}},
+        {"service": "Lambda", "region": "us-east-1", "description": "API",
+         "config": {"requests": 5000000, "duration_ms": 200, "memory_mb": 256}}
+      ]
+    },
+    {
+      "group_name": "Database",
+      "services": [
+        {"service": "RDS MySQL", "region": "us-east-1", "description": "Primary DB",
+         "config": {"instance_type": "db.m5.large", "storage_gb": 100, "deployment": "multi-az"}}
+      ]
+    }
+  ]
+}

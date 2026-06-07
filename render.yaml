@@ -1,0 +1,19 @@
+# Render Blueprint — deploy the hosted baking API.
+# In Render: New → Blueprint → connect this repo. Render builds the Dockerfile
+# (Chromium is inside the image) and injects $PORT automatically.
+#
+# Memory: Chromium needs headroom. "standard" (2 GB) is recommended; "starter"
+# (512 MB) can OOM during baking (the API then returns a draft link instead of a
+# baked one). Bump the plan if you see drafts where you expect costs.
+services:
+  - type: web
+    name: aws-calc-api
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    plan: standard
+    healthCheckPath: /health
+    autoDeploy: true
+    envVars:
+      # This server must bake locally, so it must NOT point at another API.
+      - key: AWS_CALC_API_URL
+        value: ""
