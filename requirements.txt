@@ -1,4 +1,0 @@
-# Client dependencies (MCP / CLI). Lightweight — NO browser needed when you use
-# a hosted baker via AWS_CALC_API_URL.
-mcp>=1.0.0
-httpx>=0.27.0

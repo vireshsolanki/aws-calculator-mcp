@@ -13,10 +13,63 @@ Every parse returns the structured services it understood so the user can verify
 """
 
 import re
+import difflib
 
 _NUM_WORDS = {
     "a": 1, "an": 1, "one": 1, "two": 2, "three": 3, "four": 4, "five": 5,
     "six": 6, "seven": 7, "eight": 8, "nine": 9, "ten": 10, "twelve": 12,
+}
+
+# Category for each canonical service -> used when the user wants grouping.
+_CATEGORY = {
+    "ec2": "Compute", "lambda": "Compute", "fargate": "Compute", "eks": "Compute",
+    "lightsail": "Compute",
+    "s3": "Storage", "ebs": "Storage", "efs": "Storage", "ecr": "Storage",
+    "rds mysql": "Database", "rds postgresql": "Database", "rds oracle": "Database",
+    "rds sqlserver": "Database", "rds mariadb": "Database", "aurora": "Database",
+    "aurora mysql": "Database", "aurora postgresql": "Database", "dynamodb": "Database",
+    "redshift": "Database", "opensearch": "Database", "elasticache": "Database",
+    "redis": "Database",
+    "cloudfront": "Network", "route53": "Network", "api gateway": "Network",
+    "alb": "Network", "nlb": "Network", "elb": "Network", "vpc": "Network",
+    "nat gateway": "Network", "transit gateway": "Network", "site-to-site vpn": "Network",
+    "network firewall": "Network", "privatelink": "Network",
+    "waf": "Security", "guardduty": "Security", "kms": "Security", "cognito": "Security",
+    "inspector": "Security", "security hub": "Security",
+    "cloudwatch": "Monitoring", "cloudtrail": "Monitoring", "config": "Monitoring",
+    "sqs": "Messaging", "sns": "Messaging", "ses": "Messaging", "kinesis": "Messaging",
+    "codebuild": "DevTools", "codepipeline": "DevTools",
+    "bedrock": "AI/ML",
+    "aws backup": "Backup & DR", "edr": "Backup & DR",
+}
+
+# Common misspellings / variants -> a token the fuzzy matcher recognises.
+_FUZZY_TOKENS = {
+    "ec2": "ec2", "lambda": "lambda", "lamda": "lambda", "lambda": "lambda",
+    "s3": "s3", "bucket": "s3", "buckit": "s3",
+    "ec2": "ec2", "rds": "rds", "dynamodb": "dynamodb", "dynamo": "dynamodb",
+    "dynmodb": "dynamodb", "cloudfront": "cloudfront", "cloudfornt": "cloudfront",
+    "cdn": "cloudfront", "fargate": "fargate", "farget": "fargate",
+    "lightsail": "lightsail", "redshift": "redshift", "opensearch": "opensearch",
+    "elasticache": "elasticache", "redis": "redis", "memcached": "memcached",
+    "cloudwatch": "cloudwatch", "cloudtrail": "cloudtrail", "guardduty": "guardduty",
+    "cognito": "cognito", "kinesis": "kinesis", "aurora": "aurora", "ebs": "ebs",
+    "efs": "efs", "ecr": "ecr", "eks": "eks", "kubernetes": "eks", "sqs": "sqs",
+    "sns": "sns", "ses": "ses", "waf": "waf", "kms": "kms", "vpc": "vpc",
+    "cloudfrnt": "cloudfront", "postgres": "rds", "postgresql": "rds", "mysql": "rds",
+    "bedrock": "bedrock", "route53": "route53", "alb": "alb", "nlb": "nlb",
+    "backup": "backup",
+}
+_FUZZY_TO_SERVICE = {
+    "ec2": "ec2", "lambda": "lambda", "s3": "s3", "bucket": "s3", "rds": "rds mysql",
+    "dynamodb": "dynamodb", "cloudfront": "cloudfront", "fargate": "fargate",
+    "lightsail": "lightsail", "redshift": "redshift", "opensearch": "opensearch",
+    "elasticache": "elasticache", "redis": "redis", "memcached": "elasticache",
+    "cloudwatch": "cloudwatch", "cloudtrail": "cloudtrail", "guardduty": "guardduty",
+    "cognito": "cognito", "kinesis": "kinesis", "aurora": "aurora", "ebs": "ebs",
+    "efs": "efs", "ecr": "ecr", "eks": "eks", "sqs": "sqs", "sns": "sns",
+    "ses": "ses", "waf": "waf", "kms": "kms", "vpc": "vpc", "bedrock": "bedrock",
+    "route53": "route53", "alb": "alb", "nlb": "nlb", "backup": "aws backup",
 }
 
 # service keyword -> canonical builder name in services._SERVICES
@@ -40,7 +93,7 @@ _KEYWORDS = [
     (r"\beks\b|\bkubernetes\b|\bk8s\b", "eks"),
     (r"\blightsail\b", "lightsail"),
     (r"\bbedrock\b", "bedrock"),
-    (r"\bcloudfront\b|\bcdn\b", "cloudfront"),
+    (r"\bcloud\s?front\b|\bcdn\b", "cloudfront"),
     (r"\bapi\s*gateway\b", "api gateway"),
     (r"\broute\s*53\b", "route53"),
     (r"\b(alb|application load balancer)\b", "alb"),
@@ -159,7 +212,28 @@ def _detect_service(clause: str, itype: str | None):
             return name
     if itype:
         return "ec2"
+    # fuzzy fallback — tolerate spelling mistakes ("lamda", "buckit", "dynmodb")
+    tokens = re.findall(r"[a-z0-9]+", clause)
+    for tok in tokens:
+        if len(tok) < 2:
+            continue
+        hit = difflib.get_close_matches(tok, _FUZZY_TO_SERVICE.keys(), n=1, cutoff=0.82)
+        if hit:
+            return _FUZZY_TO_SERVICE[hit[0]]
     return None
+
+
+def group_services(services: list[dict]) -> list[dict]:
+    """Turn a flat services list into category groups (Compute, Database, …)."""
+    buckets: dict[str, list] = {}
+    order: list[str] = []
+    for s in services:
+        cat = _CATEGORY.get(s.get("service", ""), "Other")
+        if cat not in buckets:
+            buckets[cat] = []
+            order.append(cat)
+        buckets[cat].append(s)
+    return [{"group_name": cat, "services": buckets[cat]} for cat in order]
 
 
 def _config_for(name: str, clause: str, itype: str | None, qty: int) -> dict:
@@ -303,9 +377,10 @@ def parse_prompt(text: str) -> tuple[list[dict], list[str]]:
     services: list[dict] = []
     notes: list[str] = []
     # split into clauses on commas / and / with / newlines / semicolons
-    # Split on commas / "and" / newlines / semicolons — but NOT "with", so that
-    # attributes like "EC2 with 50 GB" stay attached to their service.
-    clauses = re.split(r",|\band\b|\bplus\b|;|\n", low)
+    # Split on commas / "and" / newlines / semicolons. Also split on "with a/an/the"
+    # (introduces another service, e.g. "sqs with a lambda") but NOT "with 50 GB"
+    # (an attribute), so sizes stay attached to their service.
+    clauses = re.split(r",|\band\b|\bplus\b|;|\n|\bwith\s+an?\s|\bwith\s+the\s", low)
     for raw in clauses:
         clause = raw.strip()
         if len(clause) < 2:

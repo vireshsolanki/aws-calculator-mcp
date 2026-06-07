@@ -145,13 +145,17 @@ async def create_estimate(estimate_name: str = "My Estimate",
                           groups: list | None = None,
                           services: list | None = None,
                           compute_costs: bool = True,
-                          prompt: str | None = None) -> dict:
+                          prompt: str | None = None,
+                          group: bool = False,
+                          region: str | None = None) -> dict:
     """
     Build → save → (optionally) bake an estimate.
 
     Provide either structured `groups`/`services`, OR a natural-language `prompt`
     (e.g. "2 t3.large EC2, an RDS MySQL db.m5.large 100GB, a 500GB S3 bucket").
     When `prompt` is given and no structured input, it's parsed for you.
+    Set `group=True` to auto-organise services into category groups (Compute,
+    Database, Network, …).
 
     Returns: {ok, url, id, services, monthly, upfront, baked, warnings, parsed?, error?}
     """
@@ -165,6 +169,20 @@ async def create_estimate(estimate_name: str = "My Estimate",
                              "Try naming services explicitly (EC2, S3, RDS, Lambda, …).",
                     "prompt": prompt}
         parsed_note = notes
+
+    # Explicit region overrides anything guessed from the prompt.
+    if region:
+        for s in (services or []):
+            s["region"] = region
+        for g in (groups or []):
+            for s in g.get("services", []):
+                s["region"] = region
+
+    # Auto-group a flat services list into categories when requested.
+    if group and services and not groups:
+        from .parser import group_services
+        groups = group_services(services)
+        services = None
 
     # 1. Remote mode — forward to a hosted baking API (no local browser needed).
     if API_URL:
