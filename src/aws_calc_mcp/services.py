@@ -77,8 +77,14 @@ def ec2(region="us-east-1", description=None, **c) -> dict:
     """
     rc, rn = resolve_region(region)
     n = str(c.get("instances", 1))
-    os_map = {"linux": "linux", "windows": "windows", "rhel": "rhel",
-              "suse": "suse", "ubuntu": "ubuntu pro"}
+    os_map = {
+        "linux": "linux", "windows": "windows", "rhel": "rhel",
+        "suse": "suse", "ubuntu": "ubuntu pro", "ubuntu pro": "ubuntu pro",
+        # combined OS + SQL Server tiers (selectedOS values from the calculator)
+        "windows-std": "windows-std", "windows-web": "windows-web", "windows-ent": "windows-ent",
+        "linux-std": "linux-std", "linux-web": "linux-web", "linux-ent": "linux-ent",
+        "rhel-std": "rhel-std", "rhel-web": "rhel-web", "rhel-ent": "rhel-ent",
+    }
     wl_map = {"constant": "consistent", "consistent": "consistent",
               "daily": "daily", "weekly": "weekly", "monthly": "monthly"}
     st_map = {

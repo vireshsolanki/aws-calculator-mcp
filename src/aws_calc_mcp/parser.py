@@ -157,13 +157,21 @@ def _num(token: str) -> float:
 
 
 def _qty(clause: str) -> int:
-    """Leading count, e.g. '3 ec2', 'two lambdas', '10 lambdas'."""
-    m = re.search(r"\b(\d+|" + "|".join(_NUM_WORDS) + r")\s*(?:x\s*)?(?=[a-z])", clause)
+    """Leading count, e.g. '3 ec2', 'two lambdas'. Ignores sizes/instance types."""
+    # remove things whose numbers are NOT counts: instance types (m6i.2xlarge),
+    # sizes (500 GB), request counts (2M requests), and bare 'NxlargE'.
+    c = _INSTANCE_RE.sub(" ", clause)
+    c = re.sub(r"\b\d[\d.]*\s*(gb|tb|mb|kb|gib|tib|ghz|mhz)\b", " ", c)
+    c = re.sub(r"\b\d[\d.,]*\s*(k|m|million|thousand|bn|billion)?\s*"
+               r"(requests?|req|messages?|msgs?|invocations?|calls?|hits?|events?|tokens?|users?|maus?)\b", " ", c)
+    c = re.sub(r"\b\d+\s*x?large\b|\bxlarge\b", " ", c)
+    c = re.sub(r"\b(20\d\d|19\d\d)\b", " ", c)   # drop years like 2019/2022
+    m = re.search(r"\b(\d+|" + "|".join(_NUM_WORDS) + r")\s*(?:x\s*)?(?=[a-z])", c)
     if m:
         n = _num(m.group(1)) if m.group(1).isdigit() else _NUM_WORDS.get(m.group(1), 1)
         if 0 < n <= 1000:
             return int(n)
-    m = re.search(r"\b(\d+)\s*x\b", clause)
+    m = re.search(r"\b(\d+)\s*x\b", c)
     return int(m.group(1)) if m else 1
 
 
@@ -420,8 +428,9 @@ def _config_for(name: str, clause: str, itype: str | None, qty: int) -> dict:
 
 # clauses that are just glue/filler — not "unrecognized services"
 _FILLER = re.compile(r"^(i (need|want|have|would like)|need|want|please|setup|set up|"
-                     r"a |an |the |some |for |in |with |to |and |of |on |our |my |"
-                     r"infra(structure)?|stack|app|application|each|per month|monthly)+$")
+                     r"a |an |the |some |for |in |with |to |and |of |on |our |my |use |"
+                     r"infra(structure)?|stack|app|application|each|per month|monthly|"
+                     r"on[- ]?demand|reserved|spot|savings?|pricing|generate|create|estimate|link)+$")
 
 
 def parse_prompt(text: str) -> tuple[list[dict], list[str], list[str]]:
@@ -445,7 +454,9 @@ def parse_prompt(text: str) -> tuple[list[dict], list[str], list[str]]:
     # Split on commas / "and" / newlines / semicolons. Also split on "with a/an/the"
     # (introduces another service, e.g. "sqs with a lambda") but NOT "with 50 GB"
     # (an attribute), so sizes stay attached to their service.
-    clauses = re.split(r",|\band\b|\bplus\b|;|\n|\bwith\s+an?\s|\bwith\s+the\s", low)
+    # split on commas / "and" / sentence breaks (". " — not the dot in m6i.2xlarge,
+    # which has no trailing space) / "with a|an|the".
+    clauses = re.split(r",|\band\b|\bplus\b|;|\n|\.\s+|\bwith\s+an?\s|\bwith\s+the\s", low)
 
     def _emit(name: str, segment: str):
         itype = _instance_type(segment)
@@ -454,6 +465,7 @@ def parse_prompt(text: str) -> tuple[list[dict], list[str], list[str]]:
         services.append({"service": name, "region": region,
                          "description": segment.strip()[:80], "config": cfg})
 
+    last_ec2 = None   # most recent EC2, so "...500GB EBS" folds into it as storage
     for raw in clauses:
         clause = _normalize_clause(raw.strip())
         if len(clause) < 2:
@@ -465,8 +477,13 @@ def parse_prompt(text: str) -> tuple[list[dict], list[str], list[str]]:
             name = _detect_service(clause, itype)
             if name:
                 _emit(name, clause)
+                if name == "ec2":
+                    last_ec2 = services[-1]
             elif "snapshot" in clause:
                 pass   # snapshot is an attribute, applied to the server below
+            elif re.search(r"pricing|on[- ]?demand|reserved|spot|generate|calculator|"
+                           r"estimate|link|account", clause):
+                pass   # meta / pricing directive, not a service
             else:
                 stripped = clause.strip(" .")
                 if re.search(r"[a-z]", stripped) and not _FILLER.match(stripped):
@@ -481,10 +498,44 @@ def parse_prompt(text: str) -> tuple[list[dict], list[str], list[str]]:
             cfg = _config_for(name, seg, _instance_type(seg), _qty(seg))
             entry = {"service": name, "region": region,
                      "description": seg.strip()[:80], "config": cfg}
-            # same service twice in one clause (e.g. 'RDS database') -> keep richest
             if name not in by_name or len(cfg) > len(by_name[name]["config"]):
                 by_name[name] = entry
+
+        # "<server>, 500GB EBS volume" -> the EBS is the server's storage, not a
+        # separate volume service. Fold a storage-only EBS into the preceding EC2.
+        if set(by_name) == {"ebs"} and last_ec2 is not None \
+                and "storage_gb" not in last_ec2["config"] \
+                and by_name["ebs"]["config"].get("volumes", 1) <= 1 \
+                and re.search(r"\b(ebs|volume)\b", clause):
+            last_ec2["config"]["storage_gb"] = by_name["ebs"]["config"].get("storage_gb", 30)
+            continue
+
         services.extend(by_name.values())
+        if "ec2" in by_name:
+            last_ec2 = by_name["ec2"]
+
+    # Operating system + SQL Server edition apply to every EC2 in the request.
+    base = ("windows" if "windows" in low else
+            "rhel" if ("rhel" in low or "red hat" in low) else
+            "suse" if "suse" in low else
+            "ubuntu pro" if "ubuntu" in low else None)
+    sql = None
+    if re.search(r"sql\s*server|mssql", low):
+        sql = ("ent" if "enterprise" in low else "web" if "sql server web" in low else "std")
+    if base or sql:
+        osval = (base or "linux") + (f"-{sql}" if sql else "")
+        for s in services:
+            if s["service"] == "ec2":
+                s["config"]["os"] = osval
+
+    # drop a bare EC2 spawned by preamble ("...EC2 instances...") when real,
+    # detailed servers were also found.
+    detailed = any(s["service"] == "ec2" and ("instance_type" in s["config"] or "storage_gb" in s["config"])
+                   for s in services)
+    if detailed:
+        services = [s for s in services if not (
+            s["service"] == "ec2" and "instance_type" not in s["config"]
+            and "storage_gb" not in s["config"] and s["config"].get("instances", 1) <= 1)]
 
     # snapshots are commonly described separately ("...and daily snapshot of 20GB").
     # Attach any snapshot spec to the EC2/EBS services that don't already have one.
