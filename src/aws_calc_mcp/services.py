@@ -513,7 +513,7 @@ def ebs(region="us-east-1", description=None, **c) -> dict:
     """volumes, storage_type (gp3|gp2|io1|io2|st1|sc1), storage_gb, iops"""
     rc, rn = resolve_region(region)
     st_map = {
-        "gp3": "Storage General Purpose GB Mo",
+        "gp3": "Storage General Purpose gp3 GB Mo",
         "gp2": "Storage General Purpose gp2 GB Mo",
         "io1": "Storage Provisioned IOPS SSD (io1) GB Mo",
         "io2": "Storage Provisioned IOPS SSD (io2) GB Mo",
@@ -668,10 +668,13 @@ def vpc(region="us-east-1", description=None, **c) -> dict:
         })
 
     if c.get("nat_gateways"):
+        # Bill by the "regional" model only (count x AZ = total NAT gateways).
+        # Setting the per-gateway fields too would double-count.
         subs.append({
             "calculationComponents": {
-                "numberOfGateways":           {"value": str(c["nat_gateways"])},
-                "dataProcessedPerNATGateway": {"value": str(c.get("nat_data_gb", 0)), "unit": "gb|month"},
+                "regionalNatGatewayCount":        {"value": "1"},
+                "regionalNatGatewayAzCount":      {"value": str(c.get("nat_azs", c["nat_gateways"]))},
+                "regionalNatGatewayDataProcessed":{"value": str(c.get("nat_data_gb", 0)), "unit": "gb|month"},
             },
             "serviceCode": "networkAddressTranslationNatGatewayVpc",
             "region": rc, "estimateFor": "networkAddressTranslationGateway", "version": "0.0.19", "description": None,
