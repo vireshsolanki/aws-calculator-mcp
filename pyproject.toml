@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "aws-calculator-mcp"
-version = "1.3.3"
+version = "1.3.4"
 description = "Describe AWS infra in plain English and get an official, shareable AWS Pricing Calculator link with real costs — as an MCP server, CLI, and REST API."
 readme = "README.md"
 license = "MIT"
@@ -42,6 +42,7 @@ dependencies = [
 [project.optional-dependencies]
 # Optional: run the REST API server yourself (FastAPI). Not needed for MCP/CLI.
 api = ["fastapi>=0.110.0", "uvicorn[standard]>=0.27.0"]
+dev = ["build>=1.2.0", "pytest>=8.0.0", "twine>=5.0.0"]
 
 [project.scripts]
 aws-calc-mcp = "aws_calc_mcp.server:run"   # MCP server (stdio) for Claude / IDEs

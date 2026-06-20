@@ -33,7 +33,7 @@ _CATEGORY = {
     "cloudfront": "Network", "route53": "Network", "api gateway": "Network",
     "alb": "Network", "nlb": "Network", "elb": "Network", "vpc": "Network",
     "nat gateway": "Network", "transit gateway": "Network", "site-to-site vpn": "Network",
-    "network firewall": "Network", "privatelink": "Network",
+    "network firewall": "Network", "privatelink": "Network", "data transfer": "Network",
     "waf": "Security", "guardduty": "Security", "kms": "Security", "cognito": "Security",
     "inspector": "Security", "security hub": "Security",
     "cloudwatch": "Monitoring", "cloudtrail": "Monitoring", "config": "Monitoring",
@@ -58,7 +58,7 @@ _FUZZY_TOKENS = {
     "sns": "sns", "ses": "ses", "waf": "waf", "kms": "kms", "vpc": "vpc",
     "cloudfrnt": "cloudfront", "postgres": "rds", "postgresql": "rds", "mysql": "rds",
     "bedrock": "bedrock", "route53": "route53", "alb": "alb", "nlb": "nlb",
-    "backup": "backup",
+    "backup": "backup", "datatransfer": "data transfer",
 }
 _FUZZY_TO_SERVICE = {
     "ec2": "ec2", "lambda": "lambda", "s3": "s3", "bucket": "s3", "rds": "rds mysql",
@@ -70,6 +70,7 @@ _FUZZY_TO_SERVICE = {
     "efs": "efs", "ecr": "ecr", "eks": "eks", "sqs": "sqs", "sns": "sns",
     "ses": "ses", "waf": "waf", "kms": "kms", "vpc": "vpc", "bedrock": "bedrock",
     "route53": "route53", "alb": "alb", "nlb": "nlb", "backup": "aws backup",
+    "data transfer": "data transfer", "datatransfer": "data transfer",
 }
 
 # service keyword -> canonical builder name in services._SERVICES
@@ -101,6 +102,7 @@ _KEYWORDS = [
     (r"\b(elb|load balancer)\b", "elb"),
     (r"\bnat\s*gateway\b", "nat gateway"),
     (r"\btransit\s*gateway\b", "transit gateway"),
+    (r"\baws\s*data\s*transfer\b|\bdata\s*transfer\b", "data transfer"),
     (r"\b(site[- ]to[- ]site\s*vpn|vpn)\b", "site-to-site vpn"),
     (r"\bnetwork firewall\b", "network firewall"),
     (r"\bprivatelink\b|\bvpc endpoint", "privatelink"),
@@ -125,7 +127,7 @@ _KEYWORDS = [
     (r"\bcodebuild\b", "codebuild"),
     (r"\bcodepipeline\b", "codepipeline"),
     (r"\bbackup\b", "aws backup"),
-    (r"\b(disaster recovery|\bdrs\b|\bedr\b)", "edr"),
+    (r"\b(disaster recovery|\bdrs\b|\bedr\b|\bdr\b)", "edr"),
     (r"\bec2\b|\binstances?\b|\bvms?\b|\bservers?\b", "ec2"),
     # vague-intent words (low priority; specific names above always win)
     (r"\bweb\s?app\b|\bweb\s?site\b|\bwebsite\b", "ec2"),
@@ -135,6 +137,7 @@ _KEYWORDS = [
 _DEFAULT_REGION = "us-east-1"
 _REGION_HINTS = {
     "mumbai": "ap-south-1", "ap-south-1": "ap-south-1",
+    "hyderabad": "ap-south-2", "ap-south-2": "ap-south-2",
     "virginia": "us-east-1", "us-east-1": "us-east-1",
     "ohio": "us-east-2", "us-east-2": "us-east-2",
     "oregon": "us-west-2", "us-west-2": "us-west-2",
@@ -166,6 +169,12 @@ def _qty(clause: str) -> int:
                r"(requests?|req|messages?|msgs?|invocations?|calls?|hits?|events?|tokens?|users?|maus?)\b", " ", c)
     c = re.sub(r"\b\d+\s*x?large\b|\bxlarge\b", " ", c)
     c = re.sub(r"\b(20\d\d|19\d\d)\b", " ", c)   # drop years like 2019/2022
+    m = re.search(r"\b(\d+|" + "|".join(_NUM_WORDS) + r")\s+"
+                  r"(nodes?|instances?|servers?|vms?|tasks?|clusters?|volumes?)\b", c)
+    if m:
+        n = _num(m.group(1)) if m.group(1).isdigit() else _NUM_WORDS.get(m.group(1), 1)
+        if 0 < n <= 1000:
+            return int(n)
     m = re.search(r"\b(\d+|" + "|".join(_NUM_WORDS) + r")\s*(?:x\s*)?(?=[a-z])", c)
     if m:
         n = _num(m.group(1)) if m.group(1).isdigit() else _NUM_WORDS.get(m.group(1), 1)
@@ -209,6 +218,17 @@ def _requests_per_month(clause: str):
 
 
 _INSTANCE_RE = re.compile(r"\b((?:db\.|cache\.)?[a-z]+\d+[a-z]*\.(?:nano|micro|small|medium|large|\d*xlarge|search))\b")
+
+
+def _hours_per_month(clause: str):
+    """Find explicit partial-run time, preserving AWS's Hours/Month unit when given."""
+    m = re.search(r"(\d[\d.]*)\s*(?:hours?|hrs?)\s*(?:per\s*|/)?\s*month", clause)
+    if m:
+        return float(m.group(1))
+    m = re.search(r"(\d[\d.]*)\s*(?:hours?|hrs?)\s*(?:per\s*|/)?\s*day", clause)
+    if m:
+        return round(float(m.group(1)) * 30, 2)
+    return None
 
 
 def _instance_type(clause: str):
@@ -310,11 +330,13 @@ def _config_for(name: str, clause: str, itype: str | None, qty: int) -> dict:
             cfg["instance_type"] = itype
         # storage = a GB figure NOT tied to transfer wording
         sg = _storage_gb(re.sub(r"(?:data\s*transfer|transfer|outbound|egress)[^.,;]*", "", clause))
-        if sg:
-            cfg["storage_gb"] = sg
+        cfg["storage_gb"] = sg or 30
         tg = _transfer_gb(clause)
         if tg:
             cfg["data_outbound_gb"] = tg
+        hours = _hours_per_month(clause)
+        if hours:
+            cfg["hours_per_month"] = int(hours) if hours.is_integer() else hours
         if re.search(r"\b(3\s*yr|3-year|three year)\b", clause):
             cfg.update(pricing="compute-savings", term="3yr")
         elif re.search(r"\b(1\s*yr|1-year|one year|reserved|savings)\b", clause):
@@ -370,6 +392,14 @@ def _config_for(name: str, clause: str, itype: str | None, qty: int) -> dict:
     elif name == "cloudfront":
         cfg["data_transfer_gb"] = _transfer_gb(clause) or gb or 100
         cfg["https_requests"] = reqs or 1_000_000
+    elif name == "data transfer":
+        tg = _transfer_gb(clause) or gb or 100
+        if "inbound" in clause or "ingress" in clause:
+            cfg["data_inbound_gb"] = tg
+        elif "intra" in clause or "inter" in clause or "regional" in clause:
+            cfg["data_intra_region_gb"] = tg
+        else:
+            cfg["data_outbound_gb"] = tg
     elif name == "api gateway":
         cfg["http_requests_million"] = round((reqs or 1_000_000) / 1e6, 4)
     elif name == "route53":
@@ -417,6 +447,10 @@ def _config_for(name: str, clause: str, itype: str | None, qty: int) -> dict:
         cfg.update(daily_change_pct=5, annual_growth_pct=10)
     elif name == "edr":
         cfg.update(source_servers=qty, storage_gb=gb or 500)
+        if "disk" in clause:
+            cfg["disks"] = qty
+        if re.search(r"\bchange\s*rate\b", clause) and reqs:
+            cfg["change_rate_pct"] = reqs
     elif name == "codebuild":
         cfg["builds_per_month"] = 100
     elif name == "lightsail":
@@ -481,8 +515,9 @@ def parse_prompt(text: str) -> tuple[list[dict], list[str], list[str]]:
                     last_ec2 = services[-1]
             elif "snapshot" in clause:
                 pass   # snapshot is an attribute, applied to the server below
-            elif re.search(r"pricing|on[- ]?demand|reserved|spot|generate|calculator|"
-                           r"estimate|link|account", clause):
+            elif re.search(r"pricing|on[- ]?demand|reserved|spot|savings?|"
+                           r"hours?\s*(per|/)\s*month|hours?\s*(per|/)\s*day|"
+                           r"generate|calculator|estimate|link|account", clause):
                 pass   # meta / pricing directive, not a service
             else:
                 stripped = clause.strip(" .")
@@ -496,6 +531,10 @@ def parse_prompt(text: str) -> tuple[list[dict], list[str], list[str]]:
         for i, (st, en, name) in enumerate(matches):
             seg = clause[bounds[i]:bounds[i + 1]]
             cfg = _config_for(name, seg, _instance_type(seg), _qty(seg))
+            if name == "ec2" and cfg.get("instances", 1) == 1:
+                clause_qty = _qty(clause)
+                if clause_qty > 1:
+                    cfg["instances"] = clause_qty
             entry = {"service": name, "region": region,
                      "description": seg.strip()[:80], "config": cfg}
             if name not in by_name or len(cfg) > len(by_name[name]["config"]):
@@ -527,6 +566,22 @@ def parse_prompt(text: str) -> tuple[list[dict], list[str], list[str]]:
         for s in services:
             if s["service"] == "ec2":
                 s["config"]["os"] = osval
+
+    # Pricing/time clauses are often split away from the EC2 clause
+    # ("... EC2 with 100GB and 1-year savings plan"). Apply them globally.
+    global_hours = _hours_per_month(low)
+    global_term = None
+    if re.search(r"\b(3\s*yr|3-year|three year)\b", low):
+        global_term = "3yr"
+    elif re.search(r"\b(1\s*yr|1-year|one year|reserved|savings)\b", low):
+        global_term = "1yr"
+    for s in services:
+        if s["service"] != "ec2":
+            continue
+        if global_hours and "hours_per_month" not in s["config"]:
+            s["config"]["hours_per_month"] = int(global_hours) if global_hours.is_integer() else global_hours
+        if global_term and "pricing" not in s["config"]:
+            s["config"].update(pricing="compute-savings", term=global_term)
 
     # drop a bare EC2 spawned by preamble ("...EC2 instances...") when real,
     # detailed servers were also found.

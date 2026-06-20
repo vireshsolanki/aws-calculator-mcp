@@ -1,0 +1,6 @@
+exclude pypi.token
+exclude .env
+exclude .env.*
+exclude *.pem
+exclude *.key
+prune scratch
