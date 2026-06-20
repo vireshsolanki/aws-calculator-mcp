@@ -68,6 +68,29 @@ Describe your infrastructure: 2 m5.large EC2, RDS MySQL db.m5.large 100GB, an AL
 → $417.81/mo 🔗 https://calculator.aws/#/estimate?id=5c6523f2ed925c250ddfa2c90f84a4def7c36858
 ```
 
+Interactive mode is best when you want a quick guided run from the terminal. It
+accepts normal sentences, but for the most accurate results, describe one service
+at a time and separate services with commas.
+
+Good:
+
+```text
+3 Windows EC2 servers m6a.4xlarge with 300GB storage for 8 hours per month,
+EDR with 4 disks and 2000GB storage,
+1TB AWS data transfer
+```
+
+Risky:
+
+```text
+Need DR app in Hyderabad 3 windows servers 8 hours EDR 4 disks 2000GB transfer 1TB make it cheap
+```
+
+The risky version may still work, but if many numbers are close together, the
+tool can confuse counts, hours, disk counts, storage, or transfer amounts. If you
+use Cursor/Claude/another AI client, ask the AI to rewrite your request into a
+clean service list before calling the MCP tool.
+
 ### 3) Inside Claude / Cursor / any MCP client
 
 Add this to your MCP config:
@@ -165,6 +188,32 @@ https://calculator.aws/#/estimate?id=...
 - **Savings:** "reserved 3 year", "savings plan 1 year"
 - **Auto-scaling / part-time:** "runs 5 hours per day"
 
+## Prompt recommendations
+
+You do not need perfect JSON or AWS expertise, but the estimate is easier to
+validate when the prompt is specific.
+
+- Put commas between services: `2 EC2..., RDS..., S3..., ALB...`
+- Put the count next to the service: `3 EC2 servers`, `2 Aurora nodes`, `4 EDR disks`
+- Put units on every number: `300GB storage`, `1TB data transfer`, `8 hours per month`
+- Say the region plainly: `in Mumbai`, `in Hyderabad`, or `region ap-south-1`
+- Use exact AWS sizes when you know them: `m6a.4xlarge`, `db.r6g.large`, `cache.r6g.large`
+- For DR, say `EDR` or `DRS` when you mean AWS Elastic Disaster Recovery. Use plain `DR`
+  only as context, for example `Hyderabad DR setup with EDR...`
+- For EC2 pricing, prefer `1-year savings plan` or `3-year savings plan` over
+  generic `reserved`
+- After every run, check the `Understood from your prompt` lines before trusting
+  the price
+
+If the prompt is messy, this pattern works well:
+
+```text
+Estimate this in ap-south-2:
+3 Windows EC2 servers m6a.4xlarge, 300GB storage each, 8 hours per month
+EDR, 4 disks, 2000GB storage, 10 percent change rate
+AWS data transfer, 1TB outbound
+```
+
 ---
 
 ## Real examples — click to validate
@@ -236,6 +285,9 @@ Docs at `/docs`. For ChatGPT, import `/openapi.json` as a Custom GPT Action.
   the real numbers, so they match calculator.aws exactly.
 - **Friendly errors** — unknown service → "did you mean…?"; it also tells you if it
   skipped a part it didn't understand.
+- **Interactive mode is guided, not magic** — it uses the same plain-English parser
+  as the CLI. It handles common sentences, typos and missing commas, but very long
+  mixed prompts can still be ambiguous. Commas and units make it much more reliable.
 - A few calculator forms may need manual tweaks after opening the link (notably
   AWS Backup and EC2 *standard* Reserved — use Savings Plans instead).
 - The natural-language reader is a helper; an AI client (Claude/ChatGPT) handles
