@@ -127,7 +127,7 @@ _KEYWORDS = [
     (r"\bcodebuild\b", "codebuild"),
     (r"\bcodepipeline\b", "codepipeline"),
     (r"\bbackup\b", "aws backup"),
-    (r"\b(disaster recovery|\bdrs\b|\bedr\b|\bdr\b)", "edr"),
+    (r"\b(elastic\s+disaster\s+recovery|disaster recovery|\bdrs\b|\bedr\b)", "edr"),
     (r"\bec2\b|\binstances?\b|\bvms?\b|\bservers?\b", "ec2"),
     # vague-intent words (low priority; specific names above always win)
     (r"\bweb\s?app\b|\bweb\s?site\b|\bwebsite\b", "ec2"),
@@ -165,6 +165,7 @@ def _qty(clause: str) -> int:
     # sizes (500 GB), request counts (2M requests), and bare 'NxlargE'.
     c = _INSTANCE_RE.sub(" ", clause)
     c = re.sub(r"\b\d[\d.]*\s*(gb|tb|mb|kb|gib|tib|ghz|mhz)\b", " ", c)
+    c = re.sub(r"\b\d[\d.]*\s*(hours?|hrs?|days?|weeks?|months?)\b", " ", c)
     c = re.sub(r"\b\d[\d.,]*\s*(k|m|million|thousand|bn|billion)?\s*"
                r"(requests?|req|messages?|msgs?|invocations?|calls?|hits?|events?|tokens?|users?|maus?)\b", " ", c)
     c = re.sub(r"\b\d+\s*x?large\b|\bxlarge\b", " ", c)
@@ -446,11 +447,19 @@ def _config_for(name: str, clause: str, itype: str | None, qty: int) -> dict:
     elif name == "aws backup":
         cfg.update(daily_change_pct=5, annual_growth_pct=10)
     elif name == "edr":
-        cfg.update(source_servers=qty, storage_gb=gb or 500)
-        if "disk" in clause:
+        server_m = re.search(r"\b(\d+|" + "|".join(_NUM_WORDS) + r")\s+"
+                             r"(?:source\s+|on[- ]?prem(?:ise)?\s+)?servers?\b", clause)
+        disk_m = re.search(r"\b(\d+|" + "|".join(_NUM_WORDS) + r")\s+disks?\b", clause)
+        cfg["source_servers"] = int(_num(server_m.group(1))) if server_m else 1
+        cfg["storage_gb"] = gb or 500
+        if disk_m:
+            cfg["disks"] = int(_num(disk_m.group(1)))
+        elif "disk" in clause:
             cfg["disks"] = qty
-        if re.search(r"\bchange\s*rate\b", clause) and reqs:
-            cfg["change_rate_pct"] = reqs
+        change_m = re.search(r"\b(\d[\d.]*)\s*(?:%|percent)?\s*change\s*rate\b|"
+                             r"\bchange\s*rate\s*(?:of\s*)?(\d[\d.]*)\s*(?:%|percent)?\b", clause)
+        if change_m:
+            cfg["change_rate_pct"] = float(change_m.group(1) or change_m.group(2))
     elif name == "codebuild":
         cfg["builds_per_month"] = 100
     elif name == "lightsail":

@@ -70,25 +70,77 @@ Describe your infrastructure: 2 m5.large EC2, RDS MySQL db.m5.large 100GB, an AL
 
 ### 3) Inside Claude / Cursor / any MCP client
 
-Add this to your MCP config (e.g. Claude Desktop `claude_desktop_config.json`,
-or Claude Code / Cursor settings):
+Add this to your MCP config:
 
 ```json
 {
   "mcpServers": {
-    "aws-calculator": { "command": "aws-calc-mcp" }
+    "aws-cost-estimator": {
+      "command": "aws-calc-mcp"
+    }
   }
 }
 ```
-Restart the app, then just chat:
+
+In **Cursor**:
+
+1. Install the package: `pipx install aws-calculator-mcp`
+2. Check the command works: `aws-calc-mcp`
+3. Open Cursor Settings → MCP → Add server.
+4. Use command: `aws-calc-mcp`
+5. Restart Cursor if the tool does not appear immediately.
+
+If Cursor cannot find the command, use the full path:
+
+```bash
+which aws-calc-mcp
+```
+
+Then use that value in config, for example:
+
+```json
+{
+  "mcpServers": {
+    "aws-cost-estimator": {
+      "command": "/home/you/.local/bin/aws-calc-mcp"
+    }
+  }
+}
+```
+
+For local development from this repository, point Cursor at your venv binary:
+
+```json
+{
+  "mcpServers": {
+    "aws-cost-estimator-local": {
+      "command": "/absolute/path/to/aws-mcp-calculator/.venv/bin/aws-calc-mcp"
+    }
+  }
+}
+```
+
+Then just chat:
+
 > *"I'm building a small website with ~10k visitors. Suggest a budget AWS setup and
 > create a pricing link."*
 
 The assistant designs the stack and calls the tool — you get the official link back.
 
-> Tip: if the tool doesn't show up, the command isn't on PATH. Use the full path
-> instead, e.g. `"command": "/home/you/.local/bin/aws-calc-mcp"` (find it with
-> `which aws-calc-mcp`).
+Quick verification prompt after adding it:
+
+> *"Use the AWS cost estimator tool to create a draft estimate for 1 t4g.small EC2
+> with 20GB and 100GB S3 in Mumbai."*
+
+Expected shape of the response:
+
+```text
+Services: 2
+Understood from your prompt:
+  • ec2 (instances=1, instance_type=t4g.small, storage_gb=20)
+  • s3 (storage_gb=100)
+https://calculator.aws/#/estimate?id=...
+```
 
 ---
 

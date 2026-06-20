@@ -43,6 +43,31 @@ def test_hyderabad_dr_prompt_detects_region_and_hours():
     assert ec2["config"]["hours_per_month"] == 8
 
 
+def test_hours_per_month_is_not_treated_as_ec2_instance_count():
+    ec2 = _service(
+        "Hyderabad DR with 3 Windows EC2 servers m6a.4xlarge for 8 hours per month",
+        "ec2",
+    )
+
+    assert ec2["config"]["instances"] == 3
+    assert ec2["config"]["hours_per_month"] == 8
+
+
+def test_bare_dr_context_does_not_create_duplicate_edr_service():
+    services, _notes, unknown = parse_prompt(
+        "Hyderabad DR with 3 Windows EC2 servers m6a.4xlarge for 8 hours per month, "
+        "EDR 4 disks 2000GB 10 percent change rate"
+    )
+
+    assert unknown == []
+    assert [svc["service"] for svc in services].count("edr") == 1
+    edr = [svc for svc in services if svc["service"] == "edr"][0]
+    assert edr["config"]["source_servers"] == 1
+    assert edr["config"]["disks"] == 4
+    assert edr["config"]["storage_gb"] == 2000
+    assert edr["config"]["change_rate_pct"] == 10
+
+
 def test_data_transfer_prompt_maps_outbound_transfer():
     transfer = _service("AWS data transfer 250GB outbound", "data transfer")
 

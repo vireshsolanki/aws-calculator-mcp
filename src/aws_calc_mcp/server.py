@@ -107,7 +107,7 @@ async def list_tools():
                                     "OpenSearch, Kinesis, Redshift, Bedrock, Lightsail, "
                                     "ElastiCache, Redis, Memcached, Transfer Family, "
                                     "Network Firewall, Site-to-Site VPN, NAT Gateway, "
-                                    "Transit Gateway, PrivateLink, AWS Backup, "
+                                    "Transit Gateway, PrivateLink, AWS Data Transfer, AWS Backup, "
                                     "Elastic Disaster Recovery (EDR/DRS)"
                                 ),
                             },
@@ -125,7 +125,7 @@ async def list_tools():
                                 "description": (
                                     "Service-specific config. Common params per service:\n"
                                     "EC2: instances, instance_type, os, tenancy, workload, pricing, storage_type, storage_gb, data_inbound_gb, data_outbound_gb, data_intra_region_gb, hours_per_month, hours_per_day\n"
-                                    "S3: storage_gb, storage_class, put_requests, get_requests, data_returned_gb\n"
+                                    "S3: storage_gb, storage_class, put_requests, get_requests, data_returned_gb, data_outbound_gb\n"
                                     "Lambda: requests, duration_ms, memory_mb, arch, free_tier\n"
                                     "RDS/RDS MySQL/PostgreSQL: nodes, instance_type, storage_gb, storage_type, deployment, pricing\n"
                                     "Aurora: nodes, instance_type, storage_gb, engine, edition\n"
