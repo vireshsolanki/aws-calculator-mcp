@@ -20,6 +20,7 @@ build/
 # Secrets / local env (never commit)
 .env
 .env.*
+pypi.token
 *.pem
 *.key
 
@@ -33,3 +34,9 @@ Thumbs.db
 *.log
 scratch/
 .mcp.json
+
+# Generated calculator review / bake artifacts
+generated_20_calculators.md
+readme_examples*_baked.json
+generate_20_calculators.py
+gen_10_estimates.py

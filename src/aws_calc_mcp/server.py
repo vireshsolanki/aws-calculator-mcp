@@ -107,7 +107,7 @@ async def list_tools():
                                     "OpenSearch, Kinesis, Redshift, Bedrock, Lightsail, "
                                     "ElastiCache, Redis, Memcached, Transfer Family, "
                                     "Network Firewall, Site-to-Site VPN, NAT Gateway, "
-                                    "Transit Gateway, PrivateLink, AWS Backup, "
+                                    "Transit Gateway, PrivateLink, AWS Data Transfer, AWS Backup, "
                                     "Elastic Disaster Recovery (EDR/DRS)"
                                 ),
                             },
@@ -124,8 +124,8 @@ async def list_tools():
                                 "type": "object",
                                 "description": (
                                     "Service-specific config. Common params per service:\n"
-                                    "EC2: instances, instance_type, os, tenancy, workload, pricing, storage_type, storage_gb, data_inbound_gb, data_outbound_gb\n"
-                                    "S3: storage_gb, storage_class, put_requests, get_requests, data_returned_gb\n"
+                                    "EC2: instances, instance_type, os, tenancy, workload, pricing, storage_type, storage_gb, data_inbound_gb, data_outbound_gb, data_intra_region_gb, hours_per_month, hours_per_day\n"
+                                    "S3: storage_gb, storage_class, put_requests, get_requests, data_returned_gb, data_outbound_gb\n"
                                     "Lambda: requests, duration_ms, memory_mb, arch, free_tier\n"
                                     "RDS/RDS MySQL/PostgreSQL: nodes, instance_type, storage_gb, storage_type, deployment, pricing\n"
                                     "Aurora: nodes, instance_type, storage_gb, engine, edition\n"
@@ -136,7 +136,8 @@ async def list_tools():
                                     "CloudFront: data_transfer_gb, https_requests, http_requests\n"
                                     "DynamoDB: mode (provisioned|on-demand), read_capacity, write_capacity, storage_gb\n"
                                     "CloudWatch: metrics, logs_gb, dashboards, alarms\n"
-                                    "VPC: public_ips, idle_ips, vpc_endpoints, nat_gateways, nat_data_gb, vpn_connections, tgw_attachments\n"
+                                    "VPC: public_ips, idle_ips, vpc_endpoints, nat_gateways, nat_data_gb, vpn_connections, tgw_attachments, data_inbound_gb, data_outbound_gb, data_intra_region_gb\n"
+                                    "AWS Data Transfer: data_inbound_gb, data_outbound_gb, data_intra_region_gb\n"
                                     "Network Firewall: endpoints, secondary_endpoints, data_processed_gb, advanced_inspection\n"
                                     "Site-to-Site VPN: connections, vpn_duration_hrs\n"
                                     "NAT Gateway: gateways, nat_data_gb\n"
@@ -221,7 +222,9 @@ def _handle_list_services():
 ══════════════════════════════════════════
 
 Compute
-  EC2          instances, instance_type, os, pricing, storage_type, storage_gb, data_inbound_gb, data_outbound_gb
+  EC2          instances, instance_type, os, pricing, storage_type, storage_gb,
+               data_inbound_gb, data_outbound_gb, data_intra_region_gb,
+               hours_per_month, hours_per_day
   Lambda       requests, duration_ms, memory_mb, arch (x86|arm64), free_tier
   Fargate      tasks, vcpu, memory_gb, storage_gb, arch, os
   EKS          clusters, hybrid_nodes
@@ -248,6 +251,8 @@ Database
 
 Network & Connectivity
   VPC          public_ips, idle_ips, vpc_endpoints, nat_gateways, nat_data_gb, vpn_connections, tgw_attachments
+  AWS Data Transfer
+               data_inbound_gb, data_outbound_gb, data_intra_region_gb
   Network Firewall   endpoints, secondary_endpoints, data_processed_gb, advanced_inspection
   Site-to-Site VPN   connections, vpn_duration_hrs
   NAT Gateway        gateways, nat_data_gb

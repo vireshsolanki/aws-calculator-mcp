@@ -66,6 +66,38 @@ def _snapshot(c: dict) -> tuple[str, str | None]:
     return freq, (str(amt) if amt is not None else None)
 
 
+def _data_transfer_entries(c: dict) -> list[dict]:
+    """AWS calculator's shared 3-row data transfer table."""
+    in_val = str(c.get("data_inbound_gb", ""))
+    out_val = str(c.get("data_outbound_gb", ""))
+    intra_val = str(c.get("data_intra_region_gb", c.get("data_inter_region_gb", "")))
+    return [
+        {
+            "entryType": "INBOUND",
+            "value": in_val,
+            "unit": "gb_month" if in_val else "tb_month",
+            "fromRegion": c.get("data_inbound_from_region", "External" if in_val else ""),
+        },
+        {
+            "entryType": "OUTBOUND",
+            "value": out_val,
+            "unit": "gb_month" if out_val else "tb_month",
+            "toRegion": c.get("data_outbound_to_region", "External" if out_val else ""),
+        },
+        {
+            "entryType": "INTRA_REGION",
+            "value": intra_val,
+            "unit": "gb_month" if intra_val else "tb_month",
+        },
+    ]
+
+
+def _has_data_transfer(c: dict) -> bool:
+    return any(c.get(k) not in (None, "", 0) for k in (
+        "data_inbound_gb", "data_outbound_gb", "data_intra_region_gb", "data_inter_region_gb"
+    ))
+
+
 # ── EC2 ─────────────────────────────────────────────────────────────────────
 # Verified: all fields from real API capture
 
@@ -73,12 +105,20 @@ def ec2(region="us-east-1", description=None, **c) -> dict:
     """
     instances, instance_type, os, tenancy, workload,
     pricing (on-demand|savings-plans|reserved|spot),
-    storage_type (gp3|gp2|io1), storage_gb, data_inbound_gb, data_outbound_gb
+    storage_type (gp3|gp2|io1), storage_gb,
+    data_inbound_gb, data_outbound_gb, data_intra_region_gb,
+    hours_per_month or hours_per_day for partial-time usage
     """
     rc, rn = resolve_region(region)
     n = str(c.get("instances", 1))
-    os_map = {"linux": "linux", "windows": "windows", "rhel": "rhel",
-              "suse": "suse", "ubuntu": "ubuntu pro"}
+    os_map = {
+        "linux": "linux", "windows": "windows", "rhel": "rhel",
+        "suse": "suse", "ubuntu": "ubuntu pro", "ubuntu pro": "ubuntu pro",
+        # combined OS + SQL Server tiers (selectedOS values from the calculator)
+        "windows-std": "windows-std", "windows-web": "windows-web", "windows-ent": "windows-ent",
+        "linux-std": "linux-std", "linux-web": "linux-web", "linux-ent": "linux-ent",
+        "rhel-std": "rhel-std", "rhel-web": "rhel-web", "rhel-ent": "rhel-ent",
+    }
     wl_map = {"constant": "consistent", "consistent": "consistent",
               "daily": "daily", "weekly": "weekly", "monthly": "monthly"}
     st_map = {
@@ -122,18 +162,18 @@ def ec2(region="us-east-1", description=None, **c) -> dict:
               "utilizationValue": "100", "utilizationUnit": "%Utilized/Month"}
     else:
         # on-demand. utilization can model partial-time / autoscaling instances:
-        # either utilization (%) directly, or hours_per_day -> % of 24h.
-        if c.get("hours_per_day"):
+        # utilization (%) directly, hours_per_day -> %, or exact Hours/Month.
+        if c.get("hours_per_month"):
+            ps = {"selectedOption": "on-demand", "term": "1 year",
+                  "utilizationValue": str(c["hours_per_month"]), "utilizationUnit": "Hours/Month"}
+        elif c.get("hours_per_day"):
             util = str(round(float(c["hours_per_day"]) / 24.0 * 100, 1))
+            ps = {"selectedOption": "on-demand", "term": "1 year",
+                  "utilizationValue": util, "utilizationUnit": "%Utilized/Month"}
         else:
             util = str(c.get("utilization", 100))
-        ps = {"selectedOption": "on-demand", "term": "1 year",
-              "utilizationValue": util, "utilizationUnit": "%Utilized/Month"}
-
-    in_val  = str(c.get("data_inbound_gb",  ""))
-    out_val = str(c.get("data_outbound_gb", ""))
-    in_unit  = "gb_month" if c.get("data_inbound_gb")  else "tb_month"
-    out_unit = "gb_month" if c.get("data_outbound_gb") else "tb_month"
+            ps = {"selectedOption": "on-demand", "term": "1 year",
+                  "utilizationValue": util, "utilizationUnit": "%Utilized/Month"}
 
     calc = {
         "tenancy":           {"value": c.get("tenancy", "shared")},
@@ -141,11 +181,6 @@ def ec2(region="us-east-1", description=None, **c) -> dict:
         "workloadSelection": {"value": wl_map.get(c.get("workload", "constant").lower(), "consistent")},
         "storageType":       {"value": st_map.get(c.get("storage_type", "gp3").lower(),
                                                    "Storage General Purpose gp3 GB Mo")},
-        "dataTransferForEC2": {"value": [
-            {"entryType": "INBOUND",      "value": in_val,  "unit": in_unit,  "fromRegion": "External" if in_val  else ""},
-            {"entryType": "OUTBOUND",     "value": out_val, "unit": out_unit, "toRegion":   "External" if out_val else ""},
-            {"entryType": "INTRA_REGION", "value": "",      "unit": "tb_month"},
-        ]},
         "workload":                    {"value": {"workloadType": wl_map.get(c.get("workload","constant").lower(),"consistent"), "data": n}},
         "instanceType":                {"value": c.get("instance_type", "t3.micro")},
         "pricingStrategy":             {"value": ps},
@@ -153,10 +188,12 @@ def ec2(region="us-east-1", description=None, **c) -> dict:
         "detailedMonitoringCheckbox":  {"value": c.get("detailed_monitoring", False)},
         "ec2AdvancedPricingMetrics":   {"value": int(n)},
     }
+    if _has_data_transfer(c):
+        calc["dataTransferForEC2"] = {"value": _data_transfer_entries(c)}
     _snap_freq, _snap_amt = _snapshot(c)
     if _snap_freq != "0" and _snap_amt:
         calc["snapshotAmount"] = {"value": _snap_amt, "unit": "gb|NA"}
-    if c.get("storage_gb"):
+    if "storage_gb" in c:
         calc["storageAmount"] = {"value": str(c["storage_gb"]), "unit": "gb|NA"}
     if c.get("storage_type", "gp3").lower() == "gp3":
         calc["gp3Iops"]       = {"value": str(c.get("gp3_iops", 3000))}
@@ -207,7 +244,31 @@ def s3(region="us-east-1", description=None, **c) -> dict:
     if c.get("data_returned_gb"):
         sub_calc["s3StandardDataReturnedSize"] = {"value": str(c["data_returned_gb"]), "unit": "gb|month"}
 
-    out_val = str(c.get("data_outbound_gb", ""))
+    sub_services = [
+        {
+            "calculationComponents": sub_calc,
+            "serviceCode": svc_code,
+            "region": rc,
+            "estimateFor": "s3Standard",
+            "version": "0.0.71",
+            "description": None,
+        }
+    ]
+    if c.get("data_outbound_gb"):
+        out_val = str(c["data_outbound_gb"])
+        sub_services.append({
+            "calculationComponents": {
+                "dataTransfer": {"value": [
+                    {"entryType": "INBOUND",  "value": "",      "unit": "tb_month", "fromRegion": ""},
+                    {"entryType": "OUTBOUND", "value": out_val, "unit": "gb_month", "toRegion": "External"},
+                ]}
+            },
+            "serviceCode": "awsS3DataTransfer",
+            "region": rc,
+            "estimateFor": "awsS3DataTransfer",
+            "version": "0.0.27",
+            "description": None,
+        })
     return {
         "serviceCode": "amazonSimpleStorageServiceGroup",
         "region": rc, "regionName": rn,
@@ -215,30 +276,7 @@ def s3(region="us-east-1", description=None, **c) -> dict:
         "version": "0.0.83",
         "description": description,
         "serviceName": "Amazon Simple Storage Service (S3)",
-        "subServices": [
-            {
-                "calculationComponents": sub_calc,
-                "serviceCode": svc_code,
-                "region": rc,
-                "estimateFor": "s3Standard",
-                "version": "0.0.71",
-                "description": None,
-            },
-            {
-                "calculationComponents": {
-                    "dataTransfer": {"value": [
-                        {"entryType": "INBOUND",  "value": "",      "unit": "tb_month", "fromRegion": ""},
-                        {"entryType": "OUTBOUND", "value": out_val, "unit": "gb_month" if out_val else "tb_month",
-                         "toRegion": "External" if out_val else ""},
-                    ]}
-                },
-                "serviceCode": "awsS3DataTransfer",
-                "region": rc,
-                "estimateFor": "awsS3DataTransfer",
-                "version": "0.0.27",
-                "description": None,
-            },
-        ],
+        "subServices": sub_services,
     }
 
 
@@ -504,10 +542,10 @@ def elb(region="us-east-1", description=None, **c) -> dict:
 # Verified from browser capture
 
 def ebs(region="us-east-1", description=None, **c) -> dict:
-    """volumes, storage_type (gp3|gp2|io1|io2|st1|sc1), storage_gb, iops"""
+    """volumes, storage_type (gp3|gp2|io1|io2|st1|sc1), storage_gb, iops, gp3_iops, gp3_throughput"""
     rc, rn = resolve_region(region)
     st_map = {
-        "gp3": "Storage General Purpose GB Mo",
+        "gp3": "Storage General Purpose gp3 GB Mo",
         "gp2": "Storage General Purpose gp2 GB Mo",
         "io1": "Storage Provisioned IOPS SSD (io1) GB Mo",
         "io2": "Storage Provisioned IOPS SSD (io2) GB Mo",
@@ -525,12 +563,15 @@ def ebs(region="us-east-1", description=None, **c) -> dict:
     }
     if c.get("iops") and "io" in c.get("storage_type","gp3"):
         calc["iopsAmount"] = {"value": str(c["iops"])}
+    if c.get("storage_type", "gp3").lower() == "gp3":
+        calc["gp3Iops"] = {"value": str(c.get("gp3_iops", 3000))}
+        calc["gp3Throughput"] = {"value": str(c.get("gp3_throughput", 125)), "unit": "mbps"}
     return {
         "calculationComponents": calc,
         "serviceCode": "amazonElasticBlockStore",
         "region": rc, "regionName": rn,
         "estimateFor": "elasticBlockStore",
-        "version": "0.0.159",
+        "version": "0.0.155",
         "description": description,
         "serviceName": "Amazon Elastic Block Store (EBS)",
     }
@@ -644,6 +685,7 @@ def vpc(region="us-east-1", description=None, **c) -> dict:
     Site-to-Site VPN:  vpn_connections, vpn_duration_hrs
     NAT Gateway:       nat_gateways, nat_data_gb
     Public IPv4:       public_ips, idle_ips
+    Data Transfer:     data_inbound_gb, data_outbound_gb, data_intra_region_gb
     PrivateLink:       vpc_endpoints, endpoint_azs, endpoint_data_gb
     Transit Gateway:   tgw_attachments, tgw_data_gb
     """
@@ -662,10 +704,13 @@ def vpc(region="us-east-1", description=None, **c) -> dict:
         })
 
     if c.get("nat_gateways"):
+        # Bill by the "regional" model only (count x AZ = total NAT gateways).
+        # Setting the per-gateway fields too would double-count.
         subs.append({
             "calculationComponents": {
-                "numberOfGateways":           {"value": str(c["nat_gateways"])},
-                "dataProcessedPerNATGateway": {"value": str(c.get("nat_data_gb", 0)), "unit": "gb|month"},
+                "regionalNatGatewayCount":        {"value": "1"},
+                "regionalNatGatewayAzCount":      {"value": str(c.get("nat_azs", c["nat_gateways"]))},
+                "regionalNatGatewayDataProcessed":{"value": str(c.get("nat_data_gb", 0)), "unit": "gb|month"},
             },
             "serviceCode": "networkAddressTranslationNatGatewayVpc",
             "region": rc, "estimateFor": "networkAddressTranslationGateway", "version": "0.0.19", "description": None,
@@ -679,6 +724,15 @@ def vpc(region="us-east-1", description=None, **c) -> dict:
             },
             "serviceCode": "publicIpv4Address",
             "region": rc, "estimateFor": "ipv4publicaddress", "version": "0.0.17", "description": None,
+        })
+
+    if c.get("data_inbound_gb") or c.get("data_outbound_gb") or c.get("data_intra_region_gb"):
+        subs.append({
+            "calculationComponents": {
+                "dataTransfer": {"value": _data_transfer_entries(c)}
+            },
+            "serviceCode": "dataTransferVpc",
+            "region": rc, "estimateFor": "dataTransfer", "version": "0.0.9", "description": None,
         })
 
     if c.get("vpc_endpoints"):
@@ -744,6 +798,22 @@ def privatelink(region="us-east-1", description=None, **c) -> dict:
     return vpc(region, description, **c)
 
 
+def data_transfer(region="us-east-1", description=None, **c) -> dict:
+    """Standalone AWS Data Transfer: data_inbound_gb, data_outbound_gb, data_intra_region_gb."""
+    rc, rn = resolve_region(region)
+    return {
+        "calculationComponents": {
+            "dataTransfer": {"value": _data_transfer_entries(c)}
+        },
+        "serviceCode": "aWSDataTransfer",
+        "region": rc, "regionName": rn,
+        "estimateFor": "awsDatatransfer",
+        "version": "0.0.61",
+        "description": description,
+        "serviceName": "AWS Data Transfer",
+    }
+
+
 # ── WAF ──────────────────────────────────────────────────────────────────────
 # Verified from real estimate
 
@@ -805,17 +875,42 @@ def aws_backup(region="us-east-1", description=None, **c) -> dict:
 # ── Elastic Disaster Recovery (EDR / AWS DRS) ──────────────────────────────────
 
 def disaster_recovery(region="us-east-1", description=None, **c) -> dict:
-    """source_servers, disks, storage_gb, change_rate_pct, retention_days, percent_large_disks"""
+    """source_servers, disks, storage_gb, change_rate_pct, retention_days, percent_large_disks, storage_type"""
     rc, rn = resolve_region(region)
+    st_map = {
+        "gp3": "Storage General Purpose gp3 GB Mo",
+        "gp2": "Storage General Purpose gp2 GB Mo",
+        "io1": "Storage Provisioned IOPS SSD io1 GB Mo",
+        "io2": "Storage Provisioned IOPS SSD io2 GB Mo",
+        "st1": "Storage Throughput Optimized HDD GB Mo",
+        "sc1": "Storage Cold HDD GB Mo",
+    }
     sub_calc = {
         "numberOnPremiseServerReplicated": {"value": str(c.get("source_servers", 1))},
         "numberOfDisk":                    {"value": str(c.get("disks", 2))},
         "avgChangeRateOfDisk":             {"value": str(c.get("change_rate_pct", 5))},
         "storageAmount":                   {"value": str(c.get("storage_gb", 100)), "unit": "gb|NA"},
         "numberOfRetentionDays":           {"value": str(c.get("retention_days", 7))},
-        "ebsVolumeCostType":               {"value": "avg"},
+        "ebsVolumeType":                   {"value": st_map.get(c.get("storage_type", "gp3").lower(),
+                                                               "Storage General Purpose gp3 GB Mo")},
         "percentOfHigherPerformance":      {"value": str(c.get("percent_large_disks", 0))},
     }
+    subs = [
+        {"calculationComponents": sub_calc, "serviceCode": "awsDrsRecoveryReplication",
+         "region": rc, "estimateFor": "template1", "version": "0.0.37", "description": None}
+    ]
+    if c.get("include_drill", True):
+        subs.append({
+            "calculationComponents": {
+                "DRS_Hidden_Input1": {"value": "!HIDDEN"},
+                "DRS_Hidden_Input2": {"value": "!HIDDEN"},
+            },
+            "serviceCode": "awsDrsDrill",
+            "region": rc,
+            "estimateFor": "template2",
+            "version": "0.0.17",
+            "description": None,
+        })
     return {
         "serviceCode": "awsElasticDisasterRecovery",
         "region": rc, "regionName": rn,
@@ -823,10 +918,7 @@ def disaster_recovery(region="us-east-1", description=None, **c) -> dict:
         "version": "0.0.17",
         "description": description,
         "serviceName": "AWS Elastic Disaster Recovery",
-        "subServices": [
-            {"calculationComponents": sub_calc, "serviceCode": "awsDrsRecoveryReplication",
-             "region": rc, "estimateFor": "template1", "version": "0.0.37", "description": None}
-        ],
+        "subServices": subs,
     }
 
 
@@ -1576,6 +1668,7 @@ _SERVICES: dict[str, callable] = {
     "nat gateway": nat_gateway, "natgateway": nat_gateway, "nat": nat_gateway,
     "transit gateway": transit_gateway, "transitgateway": transit_gateway, "tgw": transit_gateway,
     "privatelink": privatelink, "private link": privatelink, "vpc endpoint": privatelink,
+    "data transfer": data_transfer, "aws data transfer": data_transfer, "datatransfer": data_transfer,
     "waf": waf, "guardduty": guardduty, "guard duty": guardduty,
     "inspector": inspector, "security hub": security_hub,
     "kms": kms, "cloudtrail": cloudtrail, "config": config,
@@ -1589,8 +1682,8 @@ _SERVICES: dict[str, callable] = {
     "kinesis": kinesis, "redshift": redshift,
     "bedrock": bedrock, "lightsail": lightsail,
     "elasticache": elasticache, "elastic cache": elasticache,
-    "redis": lambda r, d, **c: elasticache(r, d, engine="redis", **c),
-    "memcached": lambda r, d, **c: elasticache(r, d, engine="memcached", **c),
+    "redis": lambda r, d, **c: elasticache(r, d, **{**c, "engine": "redis"}),
+    "memcached": lambda r, d, **c: elasticache(r, d, **{**c, "engine": "memcached"}),
     "transfer family": transfer_family, "aws transfer": transfer_family,
 }
 
@@ -1601,8 +1694,9 @@ _COMMON = [
     "RDS MySQL", "RDS PostgreSQL", "Aurora MySQL", "DynamoDB", "Redshift",
     "OpenSearch", "ElastiCache", "CloudFront", "Route53", "API Gateway",
     "ALB", "NLB", "VPC", "NAT Gateway", "Transit Gateway", "Network Firewall",
-    "WAF", "GuardDuty", "KMS", "Cognito", "CloudWatch", "CloudTrail", "Config",
-    "SQS", "SNS", "SES", "Kinesis", "Bedrock", "EDR", "AWS Backup", "CodeBuild",
+    "AWS Data Transfer", "WAF", "GuardDuty", "KMS", "Cognito", "CloudWatch",
+    "CloudTrail", "Config", "SQS", "SNS", "SES", "Kinesis", "Bedrock", "EDR",
+    "AWS Backup", "CodeBuild",
 ]
 
 
